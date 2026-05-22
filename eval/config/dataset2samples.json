@@ -1,0 +1,18 @@
+{
+  "narrativeqa": 200,
+  "qasper": 200,
+  "multifieldqa_en": 150,
+  "hotpotqa": 200,
+  "2wikimqa": 200,
+  "musique": 200,
+  "gov_report": 200,
+  "qmsum": 200,
+  "multi_news": 200,
+  "trec": 200,
+  "triviaqa": 200,
+  "samsum": 200,
+  "passage_retrieval_en": 200,
+  "passage_count": 200,
+  "lcc": 500,
+  "repobench-p": 500
+}

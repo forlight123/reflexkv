@@ -1,0 +1,35 @@
+{
+  "trace_csv": "data/burstgpt/data/BurstGPT_1.csv",
+  "trace_profile": "gen_data/burstgpt_answerable_mix_n100_cap20/burstgpt_n100_li40_lo30_cap20_seed0_trace_profile.jsonl",
+  "manifest": "gen_data/burstgpt_answerable_mix_n100_cap20/burstgpt_n100_li40_lo30_cap20_seed0_manifest.jsonl",
+  "summary": "gen_data/burstgpt_answerable_mix_n100_cap20/burstgpt_n100_li40_lo30_cap20_seed0_summary.json",
+  "total_requests": 100,
+  "seed": 0,
+  "time_scale": 0.05,
+  "trace": {
+    "selected_rows": 100,
+    "selected_failed_response_rows": 0,
+    "first_timestamp_sec": 5.0,
+    "last_timestamp_sec": 125153.0,
+    "duration_sec": 1938.0,
+    "scaled_duration_sec": 96.9,
+    "long_input_tokens": 2048,
+    "long_output_tokens": 512,
+    "long_input_requests": 40,
+    "long_output_requests": 30
+  },
+  "datasets": {
+    "gov_report": {
+      "requests": 35,
+      "task": "longbench"
+    },
+    "math500": {
+      "requests": 40,
+      "task": "reasoning"
+    },
+    "qasper": {
+      "requests": 25,
+      "task": "longbench"
+    }
+  }
+}

@@ -1,0 +1,40 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and credentials
+.venv/
+venv/
+.env
+.env.*
+.codex
+
+# Local datasets, traces, and experiment outputs
+data/
+outputs/
+*.log
+*.tmp
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+*.a
+CMakeFiles/
+cmake-build-*/
+.ninja_deps
+.ninja_log
+
+# vLLM local dependency/build caches
+vllm/.deps/
+vllm/.pytest_cache/
+vllm/build/
+vllm/dist/
+vllm/*.egg-info/
