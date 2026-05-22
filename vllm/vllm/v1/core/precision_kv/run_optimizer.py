@@ -5,8 +5,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from vllm.v1.core.precision_kv.types import ReflexPageMeta
 
@@ -53,19 +53,15 @@ class DualPriceState:
         migration_backlog: int,
         migration_target: int,
         eta: float,
-    ) -> "DualPriceState":
+    ) -> DualPriceState:
         return DualPriceState(
-            memory_price=self._clip(
-                self.memory_price + eta * (kv_usage - kv_target)
-            ),
+            memory_price=self._clip(self.memory_price + eta * (kv_usage - kv_target)),
             admission_price=self._clip(
-                self.admission_price
-                + eta * (waiting_requests - waiting_target)
+                self.admission_price + eta * (waiting_requests - waiting_target)
             ),
             quality_price=self.quality_price,
             migration_price=self._clip(
-                self.migration_price
-                + eta * (migration_backlog - migration_target)
+                self.migration_price + eta * (migration_backlog - migration_target)
             ),
             slo_price=self.slo_price,
             min_price=self.min_price,
@@ -204,10 +200,7 @@ class DualRunOptimizer:
             return False
         if self._window_id(page.page_idx) != self._window_id(previous.page_idx):
             return False
-        if (
-            self.max_run_pages is not None
-            and len(current_run) >= self.max_run_pages
-        ):
+        if self.max_run_pages is not None and len(current_run) >= self.max_run_pages:
             return False
         return True
 
@@ -248,9 +241,7 @@ class DualRunOptimizer:
     ) -> bool:
         if candidate.request_id != other.request_id:
             return False
-        if self._window_id(candidate.start_page) != self._window_id(
-            other.start_page
-        ):
+        if self._window_id(candidate.start_page) != self._window_id(other.start_page):
             return False
         no_worse = (
             candidate.saving_blocks >= other.saving_blocks

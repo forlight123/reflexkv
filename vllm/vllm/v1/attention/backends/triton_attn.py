@@ -28,12 +28,12 @@ from vllm.v1.attention.backend import (
     CommonAttentionMetadata,
     MultipleOf,
 )
-from vllm.v1.attention.ops.triton_prefill_attention import context_attention_fwd
 from vllm.v1.attention.ops.int4_kv_cache import (
     int4_dequantize_kv_cache,
     int4_packed_head_size_bytes,
     int4_quantize_and_cache,
 )
+from vllm.v1.attention.ops.triton_prefill_attention import context_attention_fwd
 from vllm.v1.attention.ops.triton_reshape_and_cache_flash import (
     triton_reshape_and_cache_flash,
 )
@@ -491,9 +491,7 @@ class TritonAttentionImpl(AttentionImpl):
         block_table = attn_metadata.block_table
         if self.kv_cache_dtype == "int4":
             active_num_blocks = (
-                int(block_table.max().item()) + 1
-                if block_table.numel() > 0
-                else 1
+                int(block_table.max().item()) + 1 if block_table.numel() > 0 else 1
             )
             kv_cache = int4_dequantize_kv_cache(
                 kv_cache,
@@ -502,12 +500,11 @@ class TritonAttentionImpl(AttentionImpl):
                 num_blocks=active_num_blocks,
             )
         reflex_int4_cache = getattr(
-            layer, "reflex_int4_kv_cache",
+            layer,
+            "reflex_int4_kv_cache",
             getattr(self, "reflex_int4_kv_cache", None),
         )
-        has_reflex_int4_blocks = getattr(
-            attn_metadata, "has_reflex_int4_blocks", False
-        )
+        has_reflex_int4_blocks = getattr(attn_metadata, "has_reflex_int4_blocks", False)
         if not has_reflex_int4_blocks:
             reflex_int4_cache = None
         elif reflex_int4_cache is None:
@@ -645,8 +642,8 @@ class TritonAttentionImpl(AttentionImpl):
             # triton kernel does not support uint8 kv_cache
             #  (because some explicit casts (e.g. float8_e4m3fnuz)
             #   are not supported)
-        cache_dtype = "auto" if self.kv_cache_dtype == "reflex_int4" else (
-            self.kv_cache_dtype
+        cache_dtype = (
+            "auto" if self.kv_cache_dtype == "reflex_int4" else (self.kv_cache_dtype)
         )
         triton_reshape_and_cache_flash(
             key,

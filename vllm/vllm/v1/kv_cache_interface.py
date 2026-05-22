@@ -192,9 +192,13 @@ class FullAttentionSpec(AttentionSpec):
     @property
     def real_page_size_bytes(self) -> int:
         if self.cache_dtype_str == "int4":
-            return self.block_size * self.num_kv_heads * (
-                self.int4_packed_head_size_bytes(self.head_size)
-                + self.int4_packed_head_size_bytes(self.head_size_v)
+            return (
+                self.block_size
+                * self.num_kv_heads
+                * (
+                    self.int4_packed_head_size_bytes(self.head_size)
+                    + self.int4_packed_head_size_bytes(self.head_size_v)
+                )
             )
         return (
             self.block_size

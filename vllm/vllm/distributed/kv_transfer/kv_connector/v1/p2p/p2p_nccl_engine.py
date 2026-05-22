@@ -425,7 +425,7 @@ class P2pNcclEngine:
                         data.get("shape"),
                         data.get("dtype"),
                         self.rank,
-                )
+                    )
                 try:
                     with torch.cuda.stream(self.recv_stream):
                         tensor = torch.empty(

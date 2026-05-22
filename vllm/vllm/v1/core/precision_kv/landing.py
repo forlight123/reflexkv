@@ -48,17 +48,13 @@ class PrecisionLandingDecision:
 class PrecisionLandingPlanner:
     """Plan whether request-local INT4 landing can close an admission gap."""
 
-    def plan_landing(
-        self, state: PrecisionLandingState
-    ) -> PrecisionLandingDecision:
+    def plan_landing(self, state: PrecisionLandingState) -> PrecisionLandingDecision:
         needed_blocks = max(0, state.needed_blocks)
         reserve_blocks = max(0, state.reserve_blocks)
         required_blocks = needed_blocks + reserve_blocks
         free_bf16_blocks = max(0, state.free_bf16_blocks)
         running_feasible_release = max(0, state.running_feasible_release)
-        eligible_int4_landing_blocks = max(
-            0, state.eligible_int4_landing_blocks
-        )
+        eligible_int4_landing_blocks = max(0, state.eligible_int4_landing_blocks)
         if state.eligible_int4_landing_pages:
             eligible_int4_landing_blocks = min(
                 eligible_int4_landing_blocks,
@@ -96,10 +92,7 @@ class PrecisionLandingPlanner:
             feasible = True
             mixed_required = True
             reason = "mixed_landing_feasible"
-        elif (
-            state.allow_reserve_relaxation
-            and needed_deficit_after_running == 0
-        ):
+        elif state.allow_reserve_relaxation and needed_deficit_after_running == 0:
             planned_int4_landing_blocks = 0
             planned_int4_landing_pages = ()
             feasible = True

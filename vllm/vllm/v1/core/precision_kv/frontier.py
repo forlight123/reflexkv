@@ -77,7 +77,7 @@ class FeasibleFrontierSummary:
         target_release: int,
         feasible_release: int,
         candidate_breakdown: Any | None,
-    ) -> "FeasibleFrontierSummary":
+    ) -> FeasibleFrontierSummary:
         if candidate_breakdown is None:
             return cls(
                 scheduler_step=scheduler_step,
@@ -139,9 +139,7 @@ class FeasibleFrontierSummary:
         after_frontier_optimizer = int(
             getattr(candidate_breakdown, "after_frontier_optimizer", 0)
         )
-        int4_free_blocks = int(
-            getattr(candidate_breakdown, "int4_free_blocks", -1)
-        )
+        int4_free_blocks = int(getattr(candidate_breakdown, "int4_free_blocks", -1))
         frontier_optimizer_budget = int(
             getattr(candidate_breakdown, "frontier_optimizer_budget", -1)
         )
@@ -160,11 +158,9 @@ class FeasibleFrontierSummary:
             raw_bf16_pages,
             after_initial_recent_protection,
         )
-        eligible_by_level[PageCompressibilityLevel.PROTECTED] = (
-            _nonnegative_delta(
-                after_initial_recent_protection,
-                after_low_risk_filter,
-            )
+        eligible_by_level[PageCompressibilityLevel.PROTECTED] = _nonnegative_delta(
+            after_initial_recent_protection,
+            after_low_risk_filter,
         )
         eligible_by_level[PageCompressibilityLevel.CANDIDATE] = max(
             0,
@@ -180,11 +176,9 @@ class FeasibleFrontierSummary:
             raw_bf16_pages,
             eligible_full_unshared_pages,
         )
-        blocked_by_reason[RejectionReason.RECENT_OR_INITIAL] = (
-            _nonnegative_delta(
-                eligible_full_unshared_pages,
-                after_initial_recent_protection,
-            )
+        blocked_by_reason[RejectionReason.RECENT_OR_INITIAL] = _nonnegative_delta(
+            eligible_full_unshared_pages,
+            after_initial_recent_protection,
         )
         blocked_by_reason[RejectionReason.HIGH_RISK] = _nonnegative_delta(
             after_initial_recent_protection,
@@ -229,17 +223,13 @@ class FeasibleFrontierSummary:
                 after_sparse_window_quota,
             )
         else:
-            blocked_by_reason[RejectionReason.FRONTIER_OPTIMIZER] = (
-                _nonnegative_delta(
-                    after_sparse_window_quota,
-                    after_frontier_optimizer,
-                )
+            blocked_by_reason[RejectionReason.FRONTIER_OPTIMIZER] = _nonnegative_delta(
+                after_sparse_window_quota,
+                after_frontier_optimizer,
             )
-            blocked_by_reason[RejectionReason.INT4_POOL_FULL] = (
-                _nonnegative_delta(
-                    after_frontier_optimizer,
-                    after_int4_pool_limit,
-                )
+            blocked_by_reason[RejectionReason.INT4_POOL_FULL] = _nonnegative_delta(
+                after_frontier_optimizer,
+                after_int4_pool_limit,
             )
 
         return cls(
@@ -306,10 +296,7 @@ class FeasibleFrontierCache:
         summary = self._summaries.get((reason, target_release))
         if summary is None:
             return None
-        if (
-            summary.cached_frontier_age(current_step=current_step)
-            > self.max_age_steps
-        ):
+        if summary.cached_frontier_age(current_step=current_step) > self.max_age_steps:
             return None
         return summary
 

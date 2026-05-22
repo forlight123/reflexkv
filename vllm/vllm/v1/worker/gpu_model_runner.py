@@ -550,10 +550,9 @@ class GPUModelRunner(
             torch.Tensor,
         ] = {}
         self.reflex_int4_budget: dict[str, int | float] = {}
-        self.reflex_int4_trace_enabled = (
-            os.environ.get("SEMANTIQ_REFLEX_TRACE", "").lower()
-            in {"1", "true", "yes", "on"}
-        )
+        self.reflex_int4_trace_enabled = os.environ.get(
+            "SEMANTIQ_REFLEX_TRACE", ""
+        ).lower() in {"1", "true", "yes", "on"}
         self._reflex_int4_trace_step = 0
         # Initialize in initialize_kv_cache_tensors
         self.cross_layers_kv_cache: torch.Tensor | None = None
@@ -1117,9 +1116,7 @@ class GPUModelRunner(
     def _has_reflex_int4_blocks(self, kv_cache_gid: int, num_reqs: int) -> bool:
         if self.cache_config.cache_dtype != "reflex_int4" or num_reqs <= 0:
             return False
-        kv_cache_spec = (
-            self.kv_cache_config.kv_cache_groups[kv_cache_gid].kv_cache_spec
-        )
+        kv_cache_spec = self.kv_cache_config.kv_cache_groups[kv_cache_gid].kv_cache_spec
         if isinstance(kv_cache_spec, EncoderOnlyAttentionSpec):
             return False
 
@@ -1155,9 +1152,7 @@ class GPUModelRunner(
                 continue
 
             prompt_tokens = int(self.input_batch.num_prompt_tokens[req_idx])
-            computed_tokens = int(
-                self.input_batch.num_computed_tokens_cpu[req_idx]
-            )
+            computed_tokens = int(self.input_batch.num_computed_tokens_cpu[req_idx])
             scheduled_tokens = int(num_scheduled_tokens.get(req_id, 0))
             prompt_end = min(prompt_tokens, computed_tokens + scheduled_tokens)
             if prompt_end <= computed_tokens:
@@ -1179,9 +1174,7 @@ class GPUModelRunner(
         with recorder.batch(infos, block_size=self.cache_config.block_size):
             yield
 
-    def _execute_reflex_int4_demotions(
-        self, demotions: list[ReflexDemotion]
-    ) -> None:
+    def _execute_reflex_int4_demotions(self, demotions: list[ReflexDemotion]) -> None:
         if not demotions or self.cache_config.cache_dtype != "reflex_int4":
             return
         trace_enabled = self.reflex_int4_trace_enabled
@@ -1266,9 +1259,7 @@ class GPUModelRunner(
                 layer_name,
             )
             self.reflex_bf16_shadow_store[key] = (
-                bf16_cache[demotion.bf16_block_id]
-                .detach()
-                .to("cpu", copy=True)
+                bf16_cache[demotion.bf16_block_id].detach().to("cpu", copy=True)
             )
 
     def _execute_reflex_int4_recoveries(
@@ -1323,8 +1314,7 @@ class GPUModelRunner(
                     layer_copies += 1
         if trace_enabled:
             logger.info(
-                "ReFlexKV trace recovery_exec pages=%d layer_copies=%d "
-                "cpu_ms=%.3f.",
+                "ReFlexKV trace recovery_exec pages=%d layer_copies=%d cpu_ms=%.3f.",
                 len(recoveries),
                 layer_copies,
                 (time.perf_counter() - cpu_start) * 1000.0,
@@ -1382,9 +1372,7 @@ class GPUModelRunner(
         )
 
         if scheduler_output.reflex_int4_demotions:
-            self._execute_reflex_int4_demotions(
-                scheduler_output.reflex_int4_demotions
-            )
+            self._execute_reflex_int4_demotions(scheduler_output.reflex_int4_demotions)
             _apply_reflex_int4_demotions_to_request_states(
                 self.requests,
                 scheduler_output.reflex_int4_demotions,
@@ -7217,8 +7205,8 @@ class GPUModelRunner(
                 self.reflex_int4_kv_caches[layer_name] = int4_cache
                 kv_cache_to_int4_cache[id(kv_cache)] = int4_cache
                 layer = forward_context[layer_name]
-                setattr(layer, "reflex_int4_kv_cache", int4_cache)
-                setattr(layer.impl, "reflex_int4_kv_cache", int4_cache)
+                layer.reflex_int4_kv_cache = int4_cache
+                layer.impl.reflex_int4_kv_cache = int4_cache
                 layer_names.append(layer_name)
             if layer_names:
                 self.reflex_int4_group_layer_names[group_id] = layer_names
@@ -7226,12 +7214,14 @@ class GPUModelRunner(
         for layer_name, layer in forward_context.items():
             if layer_name in self.reflex_int4_kv_caches:
                 continue
-            int4_cache = kv_cache_to_int4_cache.get(id(getattr(layer, "kv_cache", None)))
+            int4_cache = kv_cache_to_int4_cache.get(
+                id(getattr(layer, "kv_cache", None))
+            )
             if int4_cache is None:
                 continue
             self.reflex_int4_kv_caches[layer_name] = int4_cache
-            setattr(layer, "reflex_int4_kv_cache", int4_cache)
-            setattr(layer.impl, "reflex_int4_kv_cache", int4_cache)
+            layer.reflex_int4_kv_cache = int4_cache
+            layer.impl.reflex_int4_kv_cache = int4_cache
 
     @staticmethod
     def _get_reflex_int4_cache_shape(
@@ -7239,9 +7229,7 @@ class GPUModelRunner(
         num_blocks: int | None = None,
     ) -> tuple[int, ...]:
         if kv_cache.ndim != 5:
-            raise ValueError(
-                "ReFlexKV INT4 staging expects a 5-D KV cache tensor."
-            )
+            raise ValueError("ReFlexKV INT4 staging expects a 5-D KV cache tensor.")
         if kv_cache.shape[1] == 2:
             source_num_blocks = kv_cache.shape[0]
             block_size = kv_cache.shape[2]
@@ -7368,9 +7356,7 @@ class GPUModelRunner(
 
         if has_kv_transfer_group():
             kv_transfer_group = get_kv_transfer_group()
-            self._register_kv_caches_with_transfer_group(
-                kv_transfer_group, kv_caches
-            )
+            self._register_kv_caches_with_transfer_group(kv_transfer_group, kv_caches)
 
     def _get_attention_kv_cache_gid(self) -> int:
         """Find the KV cache group index for attention layers."""

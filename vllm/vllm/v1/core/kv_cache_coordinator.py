@@ -92,9 +92,7 @@ class KVCacheCoordinator(ABC):
                 manager_kwargs["reflex_int4_num_blocks"] = (
                     kv_cache_config.reflex_int4_num_blocks
                 )
-            single_type_managers.append(
-                get_manager_for_kv_cache_spec(**manager_kwargs)
-            )
+            single_type_managers.append(get_manager_for_kv_cache_spec(**manager_kwargs))
         self.single_type_managers = tuple(single_type_managers)
 
     def get_num_blocks_to_allocate(
@@ -379,9 +377,7 @@ class KVCacheCoordinator(ABC):
             manager_promoted = manager.promote_reflex_recoverable_pages(
                 max_pages=max(0, remaining),
                 prefill_page_risks_by_request=prefill_page_risks_by_request,
-                remaining_decode_tokens_by_request=(
-                    remaining_decode_tokens_by_request
-                ),
+                remaining_decode_tokens_by_request=(remaining_decode_tokens_by_request),
                 min_remaining_decode_tokens=min_remaining_decode_tokens,
             )
             promoted += manager_promoted

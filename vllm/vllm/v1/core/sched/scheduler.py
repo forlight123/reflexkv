@@ -40,17 +40,22 @@ from vllm.v1.core.encoder_cache_manager import (
 )
 from vllm.v1.core.kv_cache_manager import KVCacheBlocks, KVCacheManager
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
-from vllm.v1.core.precision_kv.controller import (
-    PrecisionAdmissionController,
-    PrecisionAdmissionState,
+from vllm.v1.core.precision_kv.chunks import (
+    normalize_remote_chunk_tokens,
+    remote_chunking_enabled,
 )
 from vllm.v1.core.precision_kv.contracts import (
     clear_reflex_int4_landing_contract,
     has_reflex_int4_landing_contract,
 )
-from vllm.v1.core.precision_kv.chunks import (
-    normalize_remote_chunk_tokens,
-    remote_chunking_enabled,
+from vllm.v1.core.precision_kv.controller import (
+    PrecisionAdmissionController,
+    PrecisionAdmissionState,
+)
+from vllm.v1.core.precision_kv.demotion_planner import (
+    RequestBudgetCandidate,
+    RequestPrecisionBudget,
+    allocate_request_release_budgets,
 )
 from vllm.v1.core.precision_kv.frontier import (
     AdmissionTicket,
@@ -74,14 +79,8 @@ from vllm.v1.core.precision_kv.risk import (
     synthesize_remote_chunk_landing_pages,
 )
 from vllm.v1.core.precision_kv.run_optimizer import DualPriceState
-from vllm.v1.core.precision_kv.demotion_planner import (
-    RequestBudgetCandidate,
-    RequestPrecisionBudget,
-    allocate_request_release_budgets,
-)
 from vllm.v1.core.precision_kv.types import (
     PrecisionState,
-    RecoveryClass,
 )
 from vllm.v1.core.sched.interface import PauseState, SchedulerInterface
 from vllm.v1.core.sched.output import (
@@ -322,13 +321,11 @@ class Scheduler(SchedulerInterface):
             "SEMANTIQ_REFLEX_KEEP_INITIAL_PAGES",
             4,
         )
-        self._reflex_int4_max_int4_fraction_per_request = (
-            self._read_reflex_float_env(
-                "SEMANTIQ_REFLEX_MAX_INT4_FRACTION_PER_REQUEST",
-                1.0,
-                minimum=0.0,
-                maximum=1.0,
-            )
+        self._reflex_int4_max_int4_fraction_per_request = self._read_reflex_float_env(
+            "SEMANTIQ_REFLEX_MAX_INT4_FRACTION_PER_REQUEST",
+            1.0,
+            minimum=0.0,
+            maximum=1.0,
         )
         self._reflex_int4_quality_debt_max_fraction = self._read_reflex_float_env(
             "SEMANTIQ_REFLEX_QUALITY_DEBT_MAX_INT4_FRACTION",
@@ -336,19 +333,15 @@ class Scheduler(SchedulerInterface):
             minimum=0.0,
             maximum=1.0,
         )
-        self._reflex_int4_short_decode_tokens = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_SHORT_DECODE_TOKENS",
-                128,
-            )
+        self._reflex_int4_short_decode_tokens = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_SHORT_DECODE_TOKENS",
+            128,
         )
-        self._reflex_int4_short_decode_max_int4_fraction = (
-            self._read_reflex_float_env(
-                "SEMANTIQ_REFLEX_SHORT_DECODE_MAX_INT4_FRACTION",
-                0.0,
-                minimum=0.0,
-                maximum=1.0,
-            )
+        self._reflex_int4_short_decode_max_int4_fraction = self._read_reflex_float_env(
+            "SEMANTIQ_REFLEX_SHORT_DECODE_MAX_INT4_FRACTION",
+            0.0,
+            minimum=0.0,
+            maximum=1.0,
         )
         self._reflex_int4_short_admission_max_int4_fraction = (
             self._read_reflex_float_env(
@@ -374,11 +367,9 @@ class Scheduler(SchedulerInterface):
                 maximum=1.0,
             )
         )
-        self._reflex_int4_risk_warmup_tokens = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_RISK_WARMUP_TOKENS",
-                self.block_size,
-            )
+        self._reflex_int4_risk_warmup_tokens = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_RISK_WARMUP_TOKENS",
+            self.block_size,
         )
         self._reflex_int4_survival_warmup_tokens = (
             self._read_reflex_nonnegative_int_env(
@@ -386,11 +377,9 @@ class Scheduler(SchedulerInterface):
                 128,
             )
         )
-        self._reflex_int4_sparse_window_pages = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_SPARSE_WINDOW_PAGES",
-                32,
-            )
+        self._reflex_int4_sparse_window_pages = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_SPARSE_WINDOW_PAGES",
+            32,
         )
         self._reflex_int4_short_max_demote_per_window = (
             self._read_reflex_nonnegative_int_env(
@@ -398,11 +387,9 @@ class Scheduler(SchedulerInterface):
                 1,
             )
         )
-        self._reflex_int4_max_demote_per_window = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_MAX_DEMOTE_PER_WINDOW",
-                2,
-            )
+        self._reflex_int4_max_demote_per_window = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_MAX_DEMOTE_PER_WINDOW",
+            2,
         )
         self._reflex_int4_admission_sparse_window_pages = (
             self._read_reflex_nonnegative_int_env(
@@ -432,15 +419,10 @@ class Scheduler(SchedulerInterface):
                 maximum=1.0,
             )
         )
-        self._reflex_int4_mixed_landing_admission_enabled = (
-            os.environ.get(
-                "SEMANTIQ_REFLEX_ENABLE_MIXED_LANDING_ADMISSION",
-                "0",
-            )
-            .strip()
-            .lower()
-            in {"1", "true", "yes", "on"}
-        )
+        self._reflex_int4_mixed_landing_admission_enabled = os.environ.get(
+            "SEMANTIQ_REFLEX_ENABLE_MIXED_LANDING_ADMISSION",
+            "0",
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._reflex_int4_direct_landing_enabled = self._read_reflex_bool_env(
             "SEMANTIQ_REFLEX_ENABLE_DIRECT_INT4_LANDING",
             True,
@@ -451,10 +433,15 @@ class Scheduler(SchedulerInterface):
             minimum=0.0,
             maximum=1.0,
         )
-        self._reflex_int4_page_selection_policy = os.environ.get(
-            "SEMANTIQ_REFLEX_PAGE_SELECTION_POLICY",
-            "relevance_sparse",
-        ).strip().lower().replace("-", "_")
+        self._reflex_int4_page_selection_policy = (
+            os.environ.get(
+                "SEMANTIQ_REFLEX_PAGE_SELECTION_POLICY",
+                "relevance_sparse",
+            )
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
         if self._reflex_int4_page_selection_policy not in {
             "oldest",
             "distance",
@@ -482,17 +469,13 @@ class Scheduler(SchedulerInterface):
             minimum=0.0,
             maximum=1.0,
         )
-        self._reflex_int4_dual_waiting_target = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_DUAL_WAITING_TARGET",
-                0,
-            )
+        self._reflex_int4_dual_waiting_target = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_DUAL_WAITING_TARGET",
+            0,
         )
-        self._reflex_int4_dual_migration_target = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_DUAL_MIGRATION_TARGET",
-                1,
-            )
+        self._reflex_int4_dual_migration_target = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_DUAL_MIGRATION_TARGET",
+            1,
         )
         self._reflex_int4_slo_pressure_step = self._read_reflex_float_env(
             "SEMANTIQ_REFLEX_SLO_PRESSURE_STEP",
@@ -524,17 +507,13 @@ class Scheduler(SchedulerInterface):
                 512,
             )
         )
-        self._reflex_int4_short_prefill_pages = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_SHORT_PREFILL_PAGES",
-                64,
-            )
+        self._reflex_int4_short_prefill_pages = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_SHORT_PREFILL_PAGES",
+            64,
         )
-        self._reflex_int4_long_prefill_pages = (
-            self._read_reflex_nonnegative_int_env(
-                "SEMANTIQ_REFLEX_LONG_PREFILL_PAGES",
-                512,
-            )
+        self._reflex_int4_long_prefill_pages = self._read_reflex_nonnegative_int_env(
+            "SEMANTIQ_REFLEX_LONG_PREFILL_PAGES",
+            512,
         )
         self._reflex_int4_global_evidence_min_prompt_pages = (
             self._read_reflex_nonnegative_int_env(
@@ -568,11 +547,9 @@ class Scheduler(SchedulerInterface):
                 1024,
             )
         )
-        self._reflex_int4_page_level_protection_enabled = (
-            self._read_reflex_bool_env(
-                "SEMANTIQ_REFLEX_ENABLE_PAGE_LEVEL_PROTECTION",
-                True,
-            )
+        self._reflex_int4_page_level_protection_enabled = self._read_reflex_bool_env(
+            "SEMANTIQ_REFLEX_ENABLE_PAGE_LEVEL_PROTECTION",
+            True,
         )
         self._reflex_int4_long_prompt_protected_head_pages = (
             self._read_reflex_nonnegative_int_env(
@@ -595,6 +572,12 @@ class Scheduler(SchedulerInterface):
             )
         )
         self._reflex_int4_background_demotions_per_step = 16
+        self._reflex_int4_background_min_demotions_per_step = (
+            self._read_reflex_nonnegative_int_env(
+                "SEMANTIQ_REFLEX_BACKGROUND_MIN_DEMOTIONS_PER_STEP",
+                min(8, self._reflex_int4_background_demotions_per_step),
+            )
+        )
         self._reflex_int4_background_free_floor_blocks = (
             self._read_reflex_nonnegative_int_env(
                 "SEMANTIQ_REFLEX_BACKGROUND_FREE_FLOOR_BLOCKS",
@@ -622,13 +605,11 @@ class Scheduler(SchedulerInterface):
                 1,
             )
         )
-        self._reflex_int4_background_promotion_free_ratio = (
-            self._read_reflex_float_env(
-                "SEMANTIQ_REFLEX_BACKGROUND_PROMOTION_FREE_RATIO",
-                0.60,
-                minimum=0.0,
-                maximum=1.0,
-            )
+        self._reflex_int4_background_promotion_free_ratio = self._read_reflex_float_env(
+            "SEMANTIQ_REFLEX_BACKGROUND_PROMOTION_FREE_RATIO",
+            0.60,
+            minimum=0.0,
+            maximum=1.0,
         )
         self._reflex_int4_background_promotion_pages_per_step = (
             self._read_reflex_nonnegative_int_env(
@@ -891,14 +872,17 @@ class Scheduler(SchedulerInterface):
                         # The request can be scheduled.
                         break
 
-                    if self._try_reflex_int4_demote(
-                        target_bf16_blocks=self._estimate_reflex_demote_target(
-                            num_new_tokens + self.num_lookahead_tokens,
-                            force_allocate_failure=True,
-                        ),
-                        force=True,
-                        reason="allocation_failure",
-                    ) > 0:
+                    if (
+                        self._try_reflex_int4_demote(
+                            target_bf16_blocks=self._estimate_reflex_demote_target(
+                                num_new_tokens + self.num_lookahead_tokens,
+                                force_allocate_failure=True,
+                            ),
+                            force=True,
+                            reason="allocation_failure",
+                        )
+                        > 0
+                    ):
                         # Demoted BF16 blocks are released at the next scheduler
                         # step, after the worker has copied them into INT4.
                         # Retrying allocation in the same step can reuse the
@@ -1028,9 +1012,7 @@ class Scheduler(SchedulerInterface):
                     step_skipped_waiting.prepend_request(request)
                     continue
 
-                if self._should_skip_reflex_int4_waiting_request_by_ticket(
-                    request
-                ):
+                if self._should_skip_reflex_int4_waiting_request_by_ticket(request):
                     request_queue.pop_request()
                     step_skipped_waiting.prepend_request(request)
                     continue
@@ -1110,8 +1092,7 @@ class Scheduler(SchedulerInterface):
                     )
                     connector_prefix_cache_hits = num_external_computed_tokens
                     num_computed_tokens = (
-                        request.num_computed_tokens
-                        + num_external_computed_tokens
+                        request.num_computed_tokens + num_external_computed_tokens
                     )
                     assert num_computed_tokens <= request.num_tokens
                 else:
@@ -1352,9 +1333,7 @@ class Scheduler(SchedulerInterface):
                         ticket = self._record_reflex_int4_admission_ticket(
                             request=request,
                             required_blocks=(
-                                self._estimate_reflex_admission_needed_blocks(
-                                    request
-                                )
+                                self._estimate_reflex_admission_needed_blocks(request)
                                 + self._reflex_int4_admission_reserve_blocks
                             ),
                             blocked_reason="allocation_failure",
@@ -1554,8 +1533,8 @@ class Scheduler(SchedulerInterface):
             reflex_int4_demotions=reflex_int4_demotions,
             reflex_int4_recoveries=reflex_int4_recoveries,
         )
-        self._reflex_int4_prev_step_had_prefill = (
-            self._reflex_int4_step_has_prefill(num_scheduled_tokens)
+        self._reflex_int4_prev_step_had_prefill = self._reflex_int4_step_has_prefill(
+            num_scheduled_tokens
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -1603,9 +1582,7 @@ class Scheduler(SchedulerInterface):
         params = self._request_kv_transfer_params(request)
         if not (params and remote_chunking_enabled(params)):
             return 0
-        committed_page_end = params.get(
-            "reflex_remote_chunk_committed_page_end"
-        )
+        committed_page_end = params.get("reflex_remote_chunk_committed_page_end")
         chunk_inflight = bool(params.get("reflex_remote_chunk_inflight"))
         if committed_page_end is not None:
             try:
@@ -1882,6 +1859,16 @@ class Scheduler(SchedulerInterface):
                 if free_blocks >= background_floor:
                     return 0
                 target_blocks = background_floor - free_blocks
+                min_background_batch = max(
+                    0,
+                    getattr(
+                        self,
+                        "_reflex_int4_background_min_demotions_per_step",
+                        0,
+                    ),
+                )
+                if min_background_batch > 0:
+                    target_blocks = max(target_blocks, min_background_batch)
             limit = self._reflex_int4_background_demotions_per_step
         return min(target_blocks, limit)
 
@@ -2145,11 +2132,8 @@ class Scheduler(SchedulerInterface):
                     request,
                     max_int4_fraction,
                 )
-            if (
-                chunk_range is None
-                or not bool(
-                    getattr(self, "_reflex_int4_direct_landing_enabled", False)
-                )
+            if chunk_range is None or not bool(
+                getattr(self, "_reflex_int4_direct_landing_enabled", False)
             ):
                 return ()
             synthetic_pages = synthesize_remote_chunk_landing_pages(
@@ -2192,17 +2176,13 @@ class Scheduler(SchedulerInterface):
 
         keep_initial_pages = max(0, self._reflex_int4_keep_initial_pages)
         keep_recent_pages = max(0, self._reflex_int4_keep_recent_pages)
-        protected_prompt_pages = self._reflex_int4_protected_prompt_pages(
+        protected_prompt_pages = self._reflex_int4_protected_prompt_pages(request)
+        protected_prompt_page_indices = self._reflex_int4_protected_prompt_page_indices(
             request
-        )
-        protected_prompt_page_indices = (
-            self._reflex_int4_protected_prompt_page_indices(request)
         )
         recent_start = max(0, page_count - keep_recent_pages)
         chunk_start, chunk_end = (
-            (0, page_count)
-            if chunk_range is None
-            else (chunk_range[0], chunk_range[1])
+            (0, page_count) if chunk_range is None else (chunk_range[0], chunk_range[1])
         )
         filtered_pages = [
             page_idx
@@ -2239,9 +2219,7 @@ class Scheduler(SchedulerInterface):
             return "none", 0, 0, 0
 
         raw_risks = params.get("reflex_page_risks")
-        real_risk_pages = (
-            len(raw_risks) if isinstance(raw_risks, (list, tuple)) else 0
-        )
+        real_risk_pages = len(raw_risks) if isinstance(raw_risks, (list, tuple)) else 0
 
         explicit_pages = 0
         raw_pages = params.get("reflex_compressible_pages")
@@ -2282,9 +2260,7 @@ class Scheduler(SchedulerInterface):
         raw_page_start = params.get("reflex_remote_chunk_page_start")
         raw_page_end = params.get("reflex_remote_chunk_page_end")
         try:
-            page_start = (
-                int(raw_page_start) if raw_page_start is not None else None
-            )
+            page_start = int(raw_page_start) if raw_page_start is not None else None
             page_end = int(raw_page_end) if raw_page_end is not None else None
         except (TypeError, ValueError):
             page_start = None
@@ -2297,9 +2273,7 @@ class Scheduler(SchedulerInterface):
             if chunk_end_tokens is None or chunk_end_tokens <= computed_tokens:
                 return None
             page_start = computed_tokens // self.block_size
-            page_end = (
-                chunk_end_tokens + self.block_size - 1
-            ) // self.block_size
+            page_end = (chunk_end_tokens + self.block_size - 1) // self.block_size
         page_start = max(0, min(int(page_start), page_count))
         page_end = max(page_start, min(int(page_end), page_count))
         if page_end <= page_start:
@@ -2331,10 +2305,10 @@ class Scheduler(SchedulerInterface):
             "_reflex_int4_global_evidence_min_decode_tokens",
             self._reflex_int4_short_decode_tokens + 1,
         )
-        return (
-            prompt_pages >= max(0, min_prompt_pages)
-            and self._estimate_reflex_remaining_decode_tokens(request)
-            >= max(0, min_decode_tokens)
+        return prompt_pages >= max(
+            0, min_prompt_pages
+        ) and self._estimate_reflex_remaining_decode_tokens(request) >= max(
+            0, min_decode_tokens
         )
 
     def _reflex_int4_landing_fraction_for_request(
@@ -2522,8 +2496,7 @@ class Scheduler(SchedulerInterface):
     ) -> bool:
         request_level_protected = (
             getattr(request, "is_prefill_chunk", False)
-            or getattr(request, "status", None)
-            == RequestStatus.WAITING_FOR_REMOTE_KVS
+            or getattr(request, "status", None) == RequestStatus.WAITING_FOR_REMOTE_KVS
             or self._has_reflex_int4_landing_contract(request)
         )
         if (
@@ -2537,19 +2510,17 @@ class Scheduler(SchedulerInterface):
         self,
         request: Request,
     ) -> bool:
-        if not bool(
-            getattr(self, "_reflex_int4_page_level_protection_enabled", True)
-        ):
+        if not bool(getattr(self, "_reflex_int4_page_level_protection_enabled", True)):
             return False
         if self._has_reflex_int4_landing_contract(request):
             if not self._reflex_int4_landing_contract_page_indices(request):
                 return False
             if self._reflex_remote_chunk_sealed_pages(request) > 0:
                 return True
-            return (
-                getattr(request, "status", None)
-                != RequestStatus.WAITING_FOR_REMOTE_KVS
-                and not getattr(request, "is_prefill_chunk", False)
+            return getattr(
+                request, "status", None
+            ) != RequestStatus.WAITING_FOR_REMOTE_KVS and not getattr(
+                request, "is_prefill_chunk", False
             )
         return self._reflex_remote_chunk_sealed_pages(request) > 0
 
@@ -2614,13 +2585,9 @@ class Scheduler(SchedulerInterface):
         breakdown = getattr(self, "_reflex_int4_last_candidate_breakdown", None)
         if breakdown is None:
             return False
-        after_int4_pool_limit = int(
-            getattr(breakdown, "after_int4_pool_limit", 0) or 0
-        )
+        after_int4_pool_limit = int(getattr(breakdown, "after_int4_pool_limit", 0) or 0)
         selected_actual = int(getattr(breakdown, "selected_actual", 0) or 0)
-        int4_free_blocks = int(
-            getattr(breakdown, "int4_free_blocks", -1)
-        )
+        int4_free_blocks = int(getattr(breakdown, "int4_free_blocks", -1))
         return (
             after_int4_pool_limit == 0
             and selected_actual == 0
@@ -2704,8 +2671,7 @@ class Scheduler(SchedulerInterface):
         )
         if committed:
             logger.info(
-                "ReFlexKV trace landing_commit request=%s pages=%d "
-                "committed=%d.",
+                "ReFlexKV trace landing_commit request=%s pages=%d committed=%d.",
                 request.request_id,
                 len(page_indices),
                 committed,
@@ -2770,8 +2736,7 @@ class Scheduler(SchedulerInterface):
         )
         if (
             has_existing_landing_contract
-            and getattr(request, "status", None)
-            == RequestStatus.WAITING_FOR_REMOTE_KVS
+            and getattr(request, "status", None) == RequestStatus.WAITING_FOR_REMOTE_KVS
         ):
             return
         if (
@@ -2852,9 +2817,7 @@ class Scheduler(SchedulerInterface):
             or bool(params.get("reflex_int4_direct_landing")) != direct_landing
         )
         params["reflex_int4_landing_pages"] = landing_pages
-        params["reflex_int4_landing_block_ids"] = list(
-            landing_block_ids
-        )
+        params["reflex_int4_landing_block_ids"] = list(landing_block_ids)
         params["reflex_int4_direct_landing"] = direct_landing
         params["reflex_int4_landing_required_blocks"] = (
             landing_decision.residual_deficit_after_running
@@ -2907,14 +2870,11 @@ class Scheduler(SchedulerInterface):
             running_feasible_release=feasible_release,
         )
         params = getattr(request, "kv_transfer_params", None)
-        if (
-            landing_decision.mixed_landing_required
-            and (
-                not isinstance(params, dict)
-                or (
-                    not bool(params.get("do_remote_prefill"))
-                    and not self._has_reflex_int4_landing_contract(request)
-                )
+        if landing_decision.mixed_landing_required and (
+            not isinstance(params, dict)
+            or (
+                not bool(params.get("do_remote_prefill"))
+                and not self._has_reflex_int4_landing_contract(request)
             )
         ):
             self._clear_reflex_int4_landing_contract(request)
@@ -2956,9 +2916,7 @@ class Scheduler(SchedulerInterface):
                 continue
             fresh_events.add(event)
         stale_events = [
-            event
-            for event, step in event_steps.items()
-            if current_step - step > 1
+            event for event, step in event_steps.items() if current_step - step > 1
         ]
         for event in stale_events:
             event_steps.pop(event, None)
@@ -2997,13 +2955,9 @@ class Scheduler(SchedulerInterface):
             ),
         )
         request_id = getattr(request, "request_id", "<unknown>")
-        existing_ticket = self._get_reflex_int4_admission_tickets().get(
-            request_id
-        )
+        existing_ticket = self._get_reflex_int4_admission_tickets().get(request_id)
         retry_count = (
-            existing_ticket.retry_count + 1
-            if existing_ticket is not None
-            else 0
+            existing_ticket.retry_count + 1 if existing_ticket is not None else 0
         )
         backoff_multiplier = 1 << min(retry_count, 10)
         retry_delay_steps = min(
@@ -3066,12 +3020,8 @@ class Scheduler(SchedulerInterface):
                 ticket.required_blocks,
                 ticket.next_retry_step,
                 current_step,
-                self._reflex_frontier_age_or_minus_one(
-                    ticket.cached_frontier_summary
-                ),
-                self._format_reflex_frontier_levels(
-                    ticket.cached_frontier_summary
-                ),
+                self._reflex_frontier_age_or_minus_one(ticket.cached_frontier_summary),
+                self._format_reflex_frontier_levels(ticket.cached_frontier_summary),
                 self._format_reflex_frontier_rejection_reasons(
                     ticket.cached_frontier_summary
                 ),
@@ -3142,15 +3092,11 @@ class Scheduler(SchedulerInterface):
         ):
             return "mixed_landing_requires_bf16_staging"
         if admission_infeasible:
-            return self._dominant_reflex_frontier_rejection_reason(
-                frontier_summary
-            )
+            return self._dominant_reflex_frontier_rejection_reason(frontier_summary)
         if planned_release > actual_release:
             return "partial_release"
         if candidate_release_capacity < requested_release:
-            return self._dominant_reflex_frontier_rejection_reason(
-                frontier_summary
-            )
+            return self._dominant_reflex_frontier_rejection_reason(frontier_summary)
         return "admission_waiting"
 
     def _update_reflex_int4_dual_price_state(self) -> DualPriceState:
@@ -3235,12 +3181,7 @@ class Scheduler(SchedulerInterface):
         shadow_pages = sum(
             len(pages) for pages in recovery_shadow_pages_by_request.values()
         )
-        if (
-            real_risk_pages
-            or compressible_pages
-            or shadow_pages
-            or synthetic_pages
-        ):
+        if real_risk_pages or compressible_pages or shadow_pages or synthetic_pages:
             logger.info(
                 "ReFlexKV trace page_metadata_plan reason=%s "
                 "real_risk_requests=%d real_risk_pages=%d "
@@ -3298,46 +3239,36 @@ class Scheduler(SchedulerInterface):
         copy_on_demote_pages_by_request: dict[str, set[int]] = {}
         allow_partial_prefill_demotion_request_ids: set[str] = set()
         for request_id, request in requests.items():
-            protected_page_indices = (
-                self._reflex_int4_protected_prompt_page_indices(request)
+            protected_page_indices = self._reflex_int4_protected_prompt_page_indices(
+                request
             )
-            landing_contract_pages = (
-                self._reflex_int4_landing_contract_page_indices(request)
+            landing_contract_pages = self._reflex_int4_landing_contract_page_indices(
+                request
             )
             if landing_contract_pages:
-                protected_page_indices = (
-                    protected_page_indices | landing_contract_pages
-                )
+                protected_page_indices = protected_page_indices | landing_contract_pages
             if protected_page_indices:
                 protected_pages_by_request[request_id] = protected_page_indices
             protected_prefix_pages = self._reflex_contiguous_prefix_len(
                 protected_page_indices
             )
             if protected_prefix_pages > 0:
-                protected_prompt_pages_by_request[request_id] = (
-                    protected_prefix_pages
-                )
+                protected_prompt_pages_by_request[request_id] = protected_prefix_pages
             sealed_pages = self._reflex_remote_chunk_sealed_pages(request)
             if sealed_pages > 0:
                 sealed_pages_by_request[request_id] = sealed_pages
             remote_inflight_pages = self._reflex_remote_chunk_inflight_pages(request)
             if remote_inflight_pages:
-                remote_inflight_pages_by_request[request_id] = (
-                    remote_inflight_pages
-                )
+                remote_inflight_pages_by_request[request_id] = remote_inflight_pages
             copy_on_demote_pages = self._reflex_copy_on_demote_pages(request)
             if copy_on_demote_pages:
                 copy_on_demote_pages_by_request[request_id] = copy_on_demote_pages
             prompt_tokens = int(getattr(request, "num_prompt_tokens", 0) or 0)
-            computed_tokens = int(
-                getattr(request, "num_computed_tokens", 0) or 0
-            )
+            computed_tokens = int(getattr(request, "num_computed_tokens", 0) or 0)
             if (
                 self._is_reflex_remote_chunk_load(request)
                 and 0 < computed_tokens < prompt_tokens
-            ):
-                allow_partial_prefill_demotion_request_ids.add(request_id)
-            elif sealed_pages > 0:
+            ) or sealed_pages > 0:
                 allow_partial_prefill_demotion_request_ids.add(request_id)
         dual_price_state = None
         if selection_policy == "frontier_dual":
@@ -3347,12 +3278,9 @@ class Scheduler(SchedulerInterface):
             and target_bf16_blocks
             > getattr(self, "_reflex_int4_admission_reserve_blocks", 0)
         )
-        emergency_release = (
-            selection_policy == "frontier_dual"
-            and (
-                reason in {"allocation_failure", "full_sequence_reserve"}
-                or admission_waiting_emergency
-            )
+        emergency_release = selection_policy == "frontier_dual" and (
+            reason in {"allocation_failure", "full_sequence_reserve"}
+            or admission_waiting_emergency
         )
         return {
             "target_bf16_blocks": target_bf16_blocks,
@@ -3390,9 +3318,7 @@ class Scheduler(SchedulerInterface):
             "allow_partial_prefill_demotion_request_ids": (
                 allow_partial_prefill_demotion_request_ids
             ),
-            "protected_prompt_pages_by_request": (
-                protected_prompt_pages_by_request
-            ),
+            "protected_prompt_pages_by_request": (protected_prompt_pages_by_request),
             "protected_pages_by_request": protected_pages_by_request,
             "sealed_pages_by_request": sealed_pages_by_request,
             "remote_inflight_pages_by_request": remote_inflight_pages_by_request,
@@ -3400,9 +3326,7 @@ class Scheduler(SchedulerInterface):
             "compressible_pages_by_request": compressible_pages_by_request,
             "copy_on_demote_pages_by_request": copy_on_demote_pages_by_request,
             "recovery_shadow_pages_by_request": recovery_shadow_pages_by_request,
-            "recovery_shadow_pages_per_request": (
-                shadow_pages_per_request
-            ),
+            "recovery_shadow_pages_per_request": (shadow_pages_per_request),
         }
 
     def _estimate_reflex_int4_feasible_release(
@@ -3474,9 +3398,7 @@ class Scheduler(SchedulerInterface):
             self.kv_cache_manager,
             "get_last_reflex_int4_candidate_breakdown",
         ):
-            breakdown = (
-                self.kv_cache_manager.get_last_reflex_int4_candidate_breakdown()
-            )
+            breakdown = self.kv_cache_manager.get_last_reflex_int4_candidate_breakdown()
             self._reflex_int4_last_candidate_breakdown = breakdown
             summary = FeasibleFrontierSummary.from_candidate_breakdown(
                 scheduler_step=getattr(self, "_reflex_int4_scheduler_step", 0),
@@ -3629,6 +3551,9 @@ class Scheduler(SchedulerInterface):
                 admission_deficit_blocks,
                 target_blocks,
             )
+        else:
+            self._reflex_int4_last_demote_candidate_capacity = 0
+            return None
         self._reflex_int4_last_demote_candidate_capacity = 0
         decision = self._plan_reflex_int4_admission_release(
             request=request,
@@ -3645,10 +3570,7 @@ class Scheduler(SchedulerInterface):
             free_blocks=free_blocks,
             running_feasible_release=decision.feasible_release,
         )
-        if (
-            getattr(request, "status", None)
-            != RequestStatus.WAITING_FOR_REMOTE_KVS
-        ):
+        if getattr(request, "status", None) != RequestStatus.WAITING_FOR_REMOTE_KVS:
             if self._should_persist_reflex_int4_landing_contract(
                 request,
                 landing_decision,
@@ -3762,12 +3684,8 @@ class Scheduler(SchedulerInterface):
             landing_required_int4_blocks = (
                 landing_decision.residual_deficit_after_running
             )
-            landing_eligible_int4_blocks = (
-                landing_decision.eligible_int4_landing_blocks
-            )
-            landing_planned_int4_blocks = (
-                landing_decision.planned_int4_landing_blocks
-            )
+            landing_eligible_int4_blocks = landing_decision.eligible_int4_landing_blocks
+            landing_planned_int4_blocks = landing_decision.planned_int4_landing_blocks
             landing_residual_bf16_deficit = (
                 landing_decision.residual_deficit_after_running
             )
@@ -3949,12 +3867,8 @@ class Scheduler(SchedulerInterface):
         if max_prompt_pages <= 0 or prompt_pages > max_prompt_pages:
             return 0
 
-        generated_decode_tokens = self._reflex_int4_generated_decode_tokens(
-            request
-        )
-        remaining_decode_tokens = self._estimate_reflex_remaining_decode_tokens(
-            request
-        )
+        generated_decode_tokens = self._reflex_int4_generated_decode_tokens(request)
+        remaining_decode_tokens = self._estimate_reflex_remaining_decode_tokens(request)
         decode_budget = generated_decode_tokens + remaining_decode_tokens
         min_decode_tokens = getattr(
             self,
@@ -4030,7 +3944,9 @@ class Scheduler(SchedulerInterface):
             )
         )
         params = getattr(request, "kv_transfer_params", None) or {}
-        raw_risks = params.get("reflex_page_risks") if isinstance(params, dict) else None
+        raw_risks = (
+            params.get("reflex_page_risks") if isinstance(params, dict) else None
+        )
         if isinstance(raw_risks, (list, tuple)):
             for page_idx, risk in enumerate(raw_risks[:prompt_pages]):
                 try:
@@ -4170,13 +4086,9 @@ class Scheduler(SchedulerInterface):
             if (
                 (
                     request.num_computed_tokens >= request.num_prompt_tokens
-                    or self._reflex_int4_has_page_level_demotion_frontier(
-                        request
-                    )
+                    or self._reflex_int4_has_page_level_demotion_frontier(request)
                 )
-                and not self._is_reflex_int4_demotion_protected_request(
-                    request
-                )
+                and not self._is_reflex_int4_demotion_protected_request(request)
             )
         ]
         if not candidate_requests:
@@ -4206,17 +4118,12 @@ class Scheduler(SchedulerInterface):
             "full_sequence_reserve",
         }
         block_pool = self.kv_cache_manager.block_pool
-        bf16_free_ratio = (
-            block_pool.get_num_free_blocks()
-            / max(1, block_pool.num_gpu_blocks)
+        bf16_free_ratio = block_pool.get_num_free_blocks() / max(
+            1, block_pool.num_gpu_blocks
         )
-        cold_admission_emergency = (
-            admission_pressure
-            and (
-                target_bf16_blocks > 0
-                or bf16_free_ratio
-                <= self._reflex_int4_cold_admission_emergency_free_ratio
-            )
+        cold_admission_emergency = admission_pressure and (
+            target_bf16_blocks > 0
+            or bf16_free_ratio <= self._reflex_int4_cold_admission_emergency_free_ratio
         )
         cold_admission_fraction = min(
             self._reflex_int4_max_int4_fraction_per_request,
@@ -4228,9 +4135,7 @@ class Scheduler(SchedulerInterface):
         budget_inputs: dict[
             str, tuple[int, int, float, float, int, bool, int, int, int, int]
         ] = {}
-        budget_trace_inputs: dict[
-            str, tuple[int, int, int, int, int]
-        ] = {}
+        budget_trace_inputs: dict[str, tuple[int, int, int, int, int]] = {}
         for request in candidate_requests:
             page_count = max(
                 0,
@@ -4242,12 +4147,8 @@ class Scheduler(SchedulerInterface):
             remaining_decode_tokens = self._estimate_reflex_remaining_decode_tokens(
                 request
             )
-            generated_decode_tokens = self._reflex_int4_generated_decode_tokens(
-                request
-            )
-            demotion_pressure = self._reflex_int4_request_demotion_pressure(
-                request
-            )
+            generated_decode_tokens = self._reflex_int4_generated_decode_tokens(request)
+            demotion_pressure = self._reflex_int4_request_demotion_pressure(request)
             max_fraction = self._reflex_int4_max_int4_fraction_per_request
             is_short_decode = remaining_decode_tokens <= short_decode_tokens
             cold_fraction_cap: float | None = None
@@ -4276,9 +4177,7 @@ class Scheduler(SchedulerInterface):
             if max_fraction > 0.0:
                 cap_pressure = demotion_pressure
                 if is_short_decode and admission_pressure:
-                    cap_pressure = self._reflex_int4_slo_demotion_pressure(
-                        request
-                    )
+                    cap_pressure = self._reflex_int4_slo_demotion_pressure(request)
                 max_fraction = min(
                     self._reflex_int4_max_int4_fraction_per_request,
                     max_fraction * cap_pressure,
@@ -4289,8 +4188,7 @@ class Scheduler(SchedulerInterface):
                     admission_pressure
                     and generated_decode_tokens
                     >= self._reflex_int4_survival_warmup_tokens
-                    and target_bf16_blocks
-                    > self._reflex_int4_admission_reserve_blocks
+                    and target_bf16_blocks > self._reflex_int4_admission_reserve_blocks
                 ):
                     min_pressure_fraction = (
                         self._reflex_int4_admission_pressure_min_int4_fraction
@@ -4594,9 +4492,7 @@ class Scheduler(SchedulerInterface):
             self.kv_cache_manager,
             "get_last_reflex_int4_candidate_breakdown",
         ):
-            breakdown = (
-                self.kv_cache_manager.get_last_reflex_int4_candidate_breakdown()
-            )
+            breakdown = self.kv_cache_manager.get_last_reflex_int4_candidate_breakdown()
             self._reflex_int4_last_candidate_breakdown = breakdown
             summary = FeasibleFrontierSummary.from_candidate_breakdown(
                 scheduler_step=getattr(self, "_reflex_int4_scheduler_step", 0),
@@ -4672,6 +4568,8 @@ class Scheduler(SchedulerInterface):
                 free_blocks_before,
                 plan_ms,
             )
+        elif reason == "background_pressure" and not force:
+            self._reflex_int4_last_demote_step = self._reflex_int4_scheduler_step
         return planned_blocks
 
     def _build_kv_connector_meta(

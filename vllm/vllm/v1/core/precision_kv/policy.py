@@ -20,7 +20,7 @@ class CandidateFunnelSnapshot:
     after_int4_pool_limit: int = 0
 
     @classmethod
-    def from_object(cls, value: object | None) -> "CandidateFunnelSnapshot":
+    def from_object(cls, value: object | None) -> CandidateFunnelSnapshot:
         if value is None:
             return cls()
         after_sparse_window_quota = max(

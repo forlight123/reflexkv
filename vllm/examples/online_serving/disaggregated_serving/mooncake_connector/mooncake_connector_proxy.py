@@ -74,9 +74,7 @@ async def lifespan(app: FastAPI):
     app.state.ready = asyncio.Event()
     prefill_max_inflight = max(0, int(global_args.prefill_max_inflight or 0))
     app.state.prefill_semaphore = (
-        asyncio.Semaphore(prefill_max_inflight)
-        if prefill_max_inflight > 0
-        else None
+        asyncio.Semaphore(prefill_max_inflight) if prefill_max_inflight > 0 else None
     )
 
     # Create prefill clients

@@ -46,15 +46,15 @@ from vllm.utils.network_utils import get_ip, make_zmq_path, make_zmq_socket
 from vllm.v1.attention.backend import AttentionMetadata
 from vllm.v1.attention.backends.utils import get_kv_cache_layout
 from vllm.v1.attention.ops.reflex_int4_codec import get_reflex_int4_codec
-from vllm.v1.core.reflex_prefill_metadata import (
-    get_reflex_prefill_metadata_recorder,
-)
 from vllm.v1.core.precision_kv.chunks import (
     RemoteKVChunk,
     normalize_remote_chunk_tokens,
     plan_remote_kv_chunk,
     remote_chunking_enabled,
     write_remote_kv_chunk_contract,
+)
+from vllm.v1.core.reflex_prefill_metadata import (
+    get_reflex_prefill_metadata_recorder,
 )
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
@@ -299,9 +299,7 @@ class MooncakeXferResponse(
 @dataclass
 class MooncakeConnectorWorkerMetadata(KVConnectorWorkerMetadata):
     reflex_page_risks_by_request: dict[ReqId, list[float]]
-    reflex_int4_materialized_landing_req_ids: set[ReqId] = field(
-        default_factory=set
-    )
+    reflex_int4_materialized_landing_req_ids: set[ReqId] = field(default_factory=set)
 
     def aggregate(
         self, other: KVConnectorWorkerMetadata
@@ -377,17 +375,13 @@ class MooncakeConnectorMetadata(KVConnectorMetadata):
         self.reqs_to_send: dict[ReqId, tuple[TransferId, list[int]]] = {}
         self.reqs_not_processed: set[TransferId] = set()
         self.reflex_remote_chunk_ids: dict[ReqId, int] | None = None
-        self.reflex_remote_chunk_token_ranges: (
-            dict[ReqId, tuple[int, int]] | None
-        ) = None
-        self.reflex_remote_chunk_page_ranges: (
-            dict[ReqId, tuple[int, int]] | None
-        ) = None
+        self.reflex_remote_chunk_token_ranges: dict[ReqId, tuple[int, int]] | None = (
+            None
+        )
+        self.reflex_remote_chunk_page_ranges: dict[ReqId, tuple[int, int]] | None = None
         self.reflex_remote_chunk_is_last: dict[ReqId, bool] | None = None
         self.reflex_remote_chunk_defer_ready: dict[ReqId, bool] | None = None
-        self.reflex_remote_chunk_release_after_send: (
-            dict[ReqId, bool] | None
-        ) = None
+        self.reflex_remote_chunk_release_after_send: dict[ReqId, bool] | None = None
 
     @staticmethod
     def _remote_chunk_fields(
@@ -1138,9 +1132,7 @@ class MooncakeConnectorScheduler:
             None,
         )
         kv_transfer_params = (
-            {"reflex_page_risks": reflex_page_risks}
-            if reflex_page_risks
-            else None
+            {"reflex_page_risks": reflex_page_risks} if reflex_page_risks else None
         )
         return delay_free_blocks, kv_transfer_params
 
@@ -1687,7 +1679,9 @@ class MooncakeConnectorWorker:
             agent_meta.reflex_int4_kv_caches_base_addr or [],
             agent_meta.reflex_int4_block_lens or [],
         )
-        if not local_int4_regions or len(local_int4_regions) != len(remote_int4_regions):
+        if not local_int4_regions or len(local_int4_regions) != len(
+            remote_int4_regions
+        ):
             return "direct landing INT4 sidecar regions unavailable"
         scratch_int4_block_ids = self._allocate_reflex_int4_direct_scratch_ids(
             len(src_bf16_block_ids)
@@ -2175,9 +2169,7 @@ class MooncakeConnectorWorker:
         """
         if not self.is_kv_consumer:
             recorder = get_reflex_prefill_metadata_recorder()
-            page_risks = recorder.drain_completed_requests(
-                block_size=self.block_size
-            )
+            page_risks = recorder.drain_completed_requests(block_size=self.block_size)
             if finished_req_ids:
                 page_risks.update(
                     recorder.finalize_requests(
@@ -2185,7 +2177,7 @@ class MooncakeConnectorWorker:
                         prompt_tokens_by_request={},
                         block_size=self.block_size,
                     )
-            )
+                )
             if page_risks:
                 logger.info(
                     "ReFlexKV trace page_metadata_produce requests=%d "
@@ -2293,12 +2285,10 @@ class MooncakeConnectorWorker:
             }
             or None,
             reflex_int4_kv_caches_base_addr=(
-                list(getattr(self, "reflex_int4_kv_caches_base_addr", []))
-                or None
+                list(getattr(self, "reflex_int4_kv_caches_base_addr", [])) or None
             ),
             reflex_int4_block_lens=(
-                list(getattr(self, "reflex_int4_block_len_per_layer", []))
-                or None
+                list(getattr(self, "reflex_int4_block_len_per_layer", [])) or None
             ),
             reflex_remote_chunk_ids={
                 req_id: int(pull_meta.reflex_remote_chunk_id)
@@ -2375,9 +2365,7 @@ class MooncakeConnectorWorker:
     ) -> bool:
         landing_pages = pull_meta.reflex_int4_landing_pages or []
         landing_block_ids = pull_meta.reflex_int4_landing_block_ids or []
-        landing_source_block_ids = (
-            pull_meta.reflex_int4_landing_source_block_ids or []
-        )
+        landing_source_block_ids = pull_meta.reflex_int4_landing_source_block_ids or []
         if not landing_pages or not landing_block_ids:
             return False
         if len(landing_pages) != len(landing_block_ids):
@@ -2499,9 +2487,7 @@ class MooncakeConnectorWorker:
             pull_meta.pull_tasks_count -= 1
             if pull_meta.pull_tasks_count == 0:
                 if self._materialize_reflex_int4_landing_pages(pull_meta):
-                    self.reflex_int4_materialized_landing_reqs.add(
-                        pull_meta.d_req_id
-                    )
+                    self.reflex_int4_materialized_landing_reqs.add(pull_meta.d_req_id)
                 self.finished_recving_reqs.add(pull_meta.d_req_id)
 
         if ok_reqs:

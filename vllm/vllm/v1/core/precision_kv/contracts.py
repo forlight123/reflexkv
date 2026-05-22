@@ -9,7 +9,6 @@ from typing import Any
 
 from vllm.v1.core.precision_kv.types import PrecisionState
 
-
 REFLEX_INT4_LANDING_CONTRACT_KEYS = (
     "reflex_int4_landing_pages",
     "reflex_int4_landing_block_ids",

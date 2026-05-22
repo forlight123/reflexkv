@@ -310,9 +310,7 @@ class MultiGroupBlockTable:
         block_id: int,
     ) -> None:
         if kv_cache_group_id < 0 or kv_cache_group_id >= len(self.block_tables):
-            raise IndexError(
-                f"kv_cache_group_id {kv_cache_group_id} is out of range."
-            )
+            raise IndexError(f"kv_cache_group_id {kv_cache_group_id} is out of range.")
         self.block_tables[kv_cache_group_id].update_block_id(
             row_idx=row_idx,
             page_idx=page_idx,

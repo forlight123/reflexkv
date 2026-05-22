@@ -60,12 +60,8 @@ class RiskAwareInt4Quantizer:
         grouped = padded.reshape(-1, self.group_size)
         amax = grouped.abs().amax(dim=1)
         scales = torch.clamp(amax / 7.0, min=self.eps)
-        qvalues = torch.round(grouped / scales[:, None]).clamp(-8, 7).to(
-            torch.int8
-        )
-        restored = (qvalues.float() * scales[:, None]).reshape(-1)[
-            :original_numel
-        ]
+        qvalues = torch.round(grouped / scales[:, None]).clamp(-8, 7).to(torch.int8)
+        restored = (qvalues.float() * scales[:, None]).reshape(-1)[:original_numel]
         residual_indices, residual_values = self._build_residual(
             original=flat,
             restored=restored,

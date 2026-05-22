@@ -6,19 +6,19 @@ from vllm.v1.core.precision_kv.accounting import (
     ReflexBlockTableStats,
     summarize_reflex_block_table,
 )
+from vllm.v1.core.precision_kv.contracts import (
+    REFLEX_INT4_LANDING_CONTRACT_KEYS,
+    PrefixPrecisionContract,
+    PrefixPrecisionContractManager,
+    PrefixPrecisionVersion,
+    clear_reflex_int4_landing_contract,
+    has_reflex_int4_landing_contract,
+)
 from vllm.v1.core.precision_kv.controller import (
     PrecisionAdmissionController,
     PrecisionAdmissionDecision,
     PrecisionAdmissionPlan,
     PrecisionAdmissionState,
-)
-from vllm.v1.core.precision_kv.contracts import (
-    PrefixPrecisionContract,
-    PrefixPrecisionContractManager,
-    PrefixPrecisionVersion,
-    REFLEX_INT4_LANDING_CONTRACT_KEYS,
-    clear_reflex_int4_landing_contract,
-    has_reflex_int4_landing_contract,
 )
 from vllm.v1.core.precision_kv.demotion_planner import (
     DistanceDemotionPlanner,

@@ -100,6 +100,7 @@ def _make_scheduler_for_reflex_target(
         )
     )
     scheduler._reflex_int4_background_demotions_per_step = 16
+    scheduler._reflex_int4_background_min_demotions_per_step = 8
     scheduler._reflex_int4_background_free_floor_blocks = 32
     scheduler._reflex_int4_fast_demotions_per_step = (
         max(max_num_scheduled_tokens, max_model_len) + block_size - 1
@@ -760,6 +761,48 @@ def test_reflex_int4_waiting_demotion_only_step_batches_small_deficit():
 
     assert scheduler_output is not None
     assert requested_targets == [(32, True, "admission_waiting")]
+
+
+def test_reflex_int4_waiting_demotion_only_step_skips_planner_when_request_fits(
+    monkeypatch,
+):
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=900)
+    scheduler.running = [object()]
+    scheduler.waiting = True
+    scheduler.skipped_waiting = False
+    request = SimpleNamespace(
+        request_id="waiting-fits",
+        num_tokens=8192,
+        num_computed_tokens=0,
+    )
+    scheduler._select_waiting_queue_for_scheduling = lambda: SimpleNamespace(
+        peek_request=lambda: request
+    )
+
+    def fail_plan(**kwargs):
+        raise AssertionError("zero-deficit admission should not plan demotion")
+
+    scheduler.kv_cache_manager.plan_reflex_int4_demotions = fail_plan
+    scheduler._try_reflex_int4_demote = (
+        lambda *, target_bf16_blocks, force=False, reason="pressure": (
+            (_ for _ in ()).throw(
+                AssertionError("zero-deficit admission should not demote")
+            )
+        )
+    )
+    log_messages = []
+    monkeypatch.setattr(
+        scheduler_module.logger,
+        "info",
+        lambda message, *args: log_messages.append(message % args),
+    )
+
+    assert scheduler._try_reflex_int4_demotion_only_step() is None
+    assert not [
+        message
+        for message in log_messages
+        if "ReFlexKV trace admission_control" in message
+    ]
 
 
 def test_reflex_int4_waiting_demotion_only_step_logs_closed_loop_metrics(
@@ -1447,6 +1490,36 @@ def test_reflex_int4_background_demotion_only_step_runs_without_waiting():
     assert scheduler_output is not None
     assert requested_targets == [(16, False, "background_pressure")]
     assert scheduler_output.reflex_int4_demotions is not None
+
+
+def test_reflex_int4_background_target_uses_min_batch_under_pressure():
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=31)
+    scheduler._reflex_int4_background_free_floor_blocks = 32
+    scheduler._reflex_int4_background_min_demotions_per_step = 8
+    scheduler._reflex_int4_background_demotions_per_step = 16
+
+    target = scheduler._estimate_reflex_demote_target(
+        1,
+        force_allocate_failure=False,
+    )
+
+    assert target == 8
+
+
+def test_reflex_int4_background_noop_demote_enters_cooldown():
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=31)
+    scheduler._reflex_int4_scheduler_step = 42
+    scheduler._reflex_int4_last_demote_step = 0
+    scheduler.kv_cache_manager.plan_reflex_int4_demotions = lambda **kwargs: 0
+
+    released = scheduler._try_reflex_int4_demote(
+        target_bf16_blocks=8,
+        force=False,
+        reason="background_pressure",
+    )
+
+    assert released == 0
+    assert scheduler._reflex_int4_last_demote_step == 42
 
 
 def test_reflex_int4_full_sequence_reserve_persists_landing_contract():

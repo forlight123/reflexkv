@@ -7,7 +7,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 REFLEX_REMOTE_CHUNK_CONTRACT_KEYS = (
     "reflex_remote_chunk_enabled",
     "reflex_remote_chunk_tokens",

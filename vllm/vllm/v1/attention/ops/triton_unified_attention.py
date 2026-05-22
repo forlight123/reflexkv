@@ -16,13 +16,16 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
+
 logger = init_logger(__name__)
 is_batch_invariant = envs.VLLM_BATCH_INVARIANT
 float8_info = torch.finfo(current_platform.fp8_dtype())
-_trace_attention = (
-    os.environ.get("SEMANTIQ_REFLEX_TRACE_ATTENTION", "").lower()
-    in {"1", "true", "yes", "on"}
-)
+_trace_attention = os.environ.get("SEMANTIQ_REFLEX_TRACE_ATTENTION", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 @triton.jit
@@ -273,9 +276,7 @@ def kernel_unified_attention_2d(
             K_load = tl.load(
                 key_cache_ptr + k_offset,
                 mask=(
-                    dim_mask[:, None]
-                    & tile_mask[None, :]
-                    & ~is_reflex_int4[None, :]
+                    dim_mask[:, None] & tile_mask[None, :] & ~is_reflex_int4[None, :]
                 ),
                 other=0.0,
             )
@@ -300,9 +301,7 @@ def kernel_unified_attention_2d(
             )
             packed = tl.load(
                 int4_k_offset,
-                mask=(
-                    dim_mask[:, None] & tile_mask[None, :] & is_reflex_int4[None, :]
-                ),
+                mask=(dim_mask[:, None] & tile_mask[None, :] & is_reflex_int4[None, :]),
                 other=0,
             ).to(tl.int32)
             low = packed & 0xF
@@ -337,9 +336,7 @@ def kernel_unified_attention_2d(
             V_load = tl.load(
                 value_cache_ptr + v_offset,
                 mask=(
-                    dim_mask[None, :]
-                    & tile_mask[:, None]
-                    & ~is_reflex_int4[:, None]
+                    dim_mask[None, :] & tile_mask[:, None] & ~is_reflex_int4[:, None]
                 ),
                 other=0.0,
             )
@@ -365,9 +362,7 @@ def kernel_unified_attention_2d(
             )
             packed = tl.load(
                 int4_v_offset,
-                mask=(
-                    dim_mask[None, :] & tile_mask[:, None] & is_reflex_int4[:, None]
-                ),
+                mask=(dim_mask[None, :] & tile_mask[:, None] & is_reflex_int4[:, None]),
                 other=0,
             ).to(tl.int32)
             low = packed & 0xF
@@ -737,9 +732,7 @@ def kernel_unified_attention_3d(
             K_load = tl.load(
                 key_cache_ptr + k_offset,
                 mask=(
-                    dim_mask[:, None]
-                    & tile_mask[None, :]
-                    & ~is_reflex_int4[None, :]
+                    dim_mask[:, None] & tile_mask[None, :] & ~is_reflex_int4[None, :]
                 ),
                 other=0.0,
             )
@@ -764,9 +757,7 @@ def kernel_unified_attention_3d(
             )
             packed = tl.load(
                 int4_k_offset,
-                mask=(
-                    dim_mask[:, None] & tile_mask[None, :] & is_reflex_int4[None, :]
-                ),
+                mask=(dim_mask[:, None] & tile_mask[None, :] & is_reflex_int4[None, :]),
                 other=0,
             ).to(tl.int32)
             low = packed & 0xF
@@ -801,9 +792,7 @@ def kernel_unified_attention_3d(
             V_load = tl.load(
                 value_cache_ptr + v_offset,
                 mask=(
-                    dim_mask[None, :]
-                    & tile_mask[:, None]
-                    & ~is_reflex_int4[:, None]
+                    dim_mask[None, :] & tile_mask[:, None] & ~is_reflex_int4[:, None]
                 ),
                 other=0.0,
             )
@@ -829,9 +818,7 @@ def kernel_unified_attention_3d(
             )
             packed = tl.load(
                 int4_v_offset,
-                mask=(
-                    dim_mask[None, :] & tile_mask[:, None] & is_reflex_int4[:, None]
-                ),
+                mask=(dim_mask[None, :] & tile_mask[:, None] & is_reflex_int4[:, None]),
                 other=0,
             ).to(tl.int32)
             low = packed & 0xF
@@ -1232,9 +1219,7 @@ def unified_attention(
             query_ptr=q,
             key_cache_ptr=k,
             value_cache_ptr=v,
-            reflex_int4_cache_ptr=(
-                reflex_int4_kv_cache if use_reflex_int4 else k
-            ),
+            reflex_int4_cache_ptr=(reflex_int4_kv_cache if use_reflex_int4 else k),
             sink_ptr=sinks,
             block_tables_ptr=block_table,
             seq_lens_ptr=seqused_k,
@@ -1335,9 +1320,7 @@ def unified_attention(
             query_ptr=q,
             key_cache_ptr=k,
             value_cache_ptr=v,
-            reflex_int4_cache_ptr=(
-                reflex_int4_kv_cache if use_reflex_int4 else k
-            ),
+            reflex_int4_cache_ptr=(reflex_int4_kv_cache if use_reflex_int4 else k),
             sink_ptr=sinks,
             block_tables_ptr=block_table,
             seq_lens_ptr=seqused_k,

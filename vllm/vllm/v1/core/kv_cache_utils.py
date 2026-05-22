@@ -875,9 +875,15 @@ def get_reflex_int4_sidecar_page_size(kv_cache_spec: KVCacheSpec) -> int:
         isinstance(kv_cache_spec, FullAttentionSpec)
         and kv_cache_spec.cache_dtype_str == "reflex_int4"
     ):
-        return kv_cache_spec.block_size * kv_cache_spec.num_kv_heads * (
-            FullAttentionSpec.int4_packed_head_size_bytes(kv_cache_spec.head_size)
-            + FullAttentionSpec.int4_packed_head_size_bytes(kv_cache_spec.head_size_v)
+        return (
+            kv_cache_spec.block_size
+            * kv_cache_spec.num_kv_heads
+            * (
+                FullAttentionSpec.int4_packed_head_size_bytes(kv_cache_spec.head_size)
+                + FullAttentionSpec.int4_packed_head_size_bytes(
+                    kv_cache_spec.head_size_v
+                )
+            )
         )
     if (
         isinstance(kv_cache_spec, AttentionSpec)
@@ -887,10 +893,7 @@ def get_reflex_int4_sidecar_page_size(kv_cache_spec: KVCacheSpec) -> int:
             kv_cache_spec.head_size
         )
         return (
-            2
-            * kv_cache_spec.block_size
-            * kv_cache_spec.num_kv_heads
-            * packed_head_size
+            2 * kv_cache_spec.block_size * kv_cache_spec.num_kv_heads * packed_head_size
         )
     return 0
 

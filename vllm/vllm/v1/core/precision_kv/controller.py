@@ -64,9 +64,7 @@ class PrecisionAdmissionController:
     def plan_admission(
         self, state: PrecisionAdmissionState
     ) -> PrecisionAdmissionDecision:
-        required_blocks = max(0, state.needed_blocks) + max(
-            0, state.reserve_blocks
-        )
+        required_blocks = max(0, state.needed_blocks) + max(0, state.reserve_blocks)
         requested_release = max(0, state.requested_release)
         free_bf16_blocks = max(0, state.free_bf16_blocks)
         feasible_release = min(max(0, state.feasible_release), requested_release)
@@ -76,9 +74,7 @@ class PrecisionAdmissionController:
             admission_success = True
             admission_infeasible = False
         else:
-            frontier_can_admit = (
-                free_bf16_blocks + feasible_release >= required_blocks
-            )
+            frontier_can_admit = free_bf16_blocks + feasible_release >= required_blocks
             if feasible_release > 0:
                 planned_release = feasible_release
                 free_after_planned = free_bf16_blocks + planned_release
@@ -136,12 +132,8 @@ class PrecisionAdmissionController:
                     if landing_decision.reserve_relaxed
                     else "mixed_landing_closes_deficit"
                 )
-            elif (
-                admission_decision.feasible_release >= mixed_landing_release_gap
-                and (
-                    planned_release == 0
-                    or mixed_landing_release_gap < planned_release
-                )
+            elif admission_decision.feasible_release >= mixed_landing_release_gap and (
+                planned_release == 0 or mixed_landing_release_gap < planned_release
             ):
                 planned_release = mixed_landing_release_gap
                 admission_infeasible = False

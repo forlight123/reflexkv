@@ -96,8 +96,8 @@ class SingleTypeKVCacheManager(ABC):
             else None
         )
         self.req_to_reflex_block_ids: defaultdict[str, list[int]] = defaultdict(list)
-        self.req_to_reflex_landing_int4_ids: defaultdict[str, list[int]] = (
-            defaultdict(list)
+        self.req_to_reflex_landing_int4_ids: defaultdict[str, list[int]] = defaultdict(
+            list
         )
         self.req_to_reflex_landing_page_indices: defaultdict[str, list[int]] = (
             defaultdict(list)
@@ -111,9 +111,9 @@ class SingleTypeKVCacheManager(ABC):
         self._pending_reflex_int4_demotions: list[ReflexDemotion] = []
         self._pending_reflex_int4_recoveries: list[ReflexRecovery] = []
         self._pending_reflex_bf16_releases: list[KVCacheBlock] = []
-        self._pending_reflex_bf16_release_count_by_request: defaultdict[
-            str, int
-        ] = defaultdict(int)
+        self._pending_reflex_bf16_release_count_by_request: defaultdict[str, int] = (
+            defaultdict(int)
+        )
         self._pending_reflex_bf16_release_pages_by_request: defaultdict[
             str, set[int]
         ] = defaultdict(set)
@@ -346,9 +346,7 @@ class SingleTypeKVCacheManager(ABC):
                     block = next(allocated_iter)
                     req_blocks.append(block)
                     if self.reflex_int4_pool is not None:
-                        self.req_to_reflex_block_ids[request_id].append(
-                            block.block_id
-                        )
+                        self.req_to_reflex_block_ids[request_id].append(block.block_id)
             if type(self.kv_cache_spec) is FullAttentionSpec:
                 self.new_block_ids.extend(b.block_id for b in allocated_blocks)
 
@@ -406,9 +404,7 @@ class SingleTypeKVCacheManager(ABC):
                 block = next(new_block_iter)
                 req_blocks.append(block)
                 if self.reflex_int4_pool is not None:
-                    self.req_to_reflex_block_ids[request_id].append(
-                        block.block_id
-                    )
+                    self.req_to_reflex_block_ids[request_id].append(block.block_id)
             if type(self.kv_cache_spec) is FullAttentionSpec:
                 self.new_block_ids.extend(b.block_id for b in new_blocks)
             return new_blocks
@@ -489,7 +485,9 @@ class SingleTypeKVCacheManager(ABC):
         if self.reflex_int4_pool is None or request_id not in self.req_to_blocks:
             return False
         self._ensure_reflex_block_ids(request_id)
-        return any(encoded_id < 0 for encoded_id in self.req_to_reflex_block_ids[request_id])
+        return any(
+            encoded_id < 0 for encoded_id in self.req_to_reflex_block_ids[request_id]
+        )
 
     def reserve_reflex_int4_landing_blocks(
         self,
@@ -502,8 +500,7 @@ class SingleTypeKVCacheManager(ABC):
 
         current_ids = self.req_to_reflex_landing_int4_ids.get(request_id, [])
         if len(current_ids) == count and all(
-            self.reflex_int4_pool.is_allocated(block_id)
-            for block_id in current_ids
+            self.reflex_int4_pool.is_allocated(block_id) for block_id in current_ids
         ):
             if page_indices is not None:
                 self.record_reflex_int4_landing_pages(request_id, page_indices)
@@ -612,9 +609,7 @@ class SingleTypeKVCacheManager(ABC):
                     f"request={request_id}, page={page_idx}, "
                     f"allocated_pages={len(blocks)}."
                 )
-            precision, physical_id = decode_block_table_entry(
-                encoded_ids[page_idx]
-            )
+            precision, physical_id = decode_block_table_entry(encoded_ids[page_idx])
             if precision == PrecisionState.INT4:
                 if physical_id != int4_block_id:
                     raise RuntimeError(
@@ -688,9 +683,7 @@ class SingleTypeKVCacheManager(ABC):
         if self.reflex_int4_pool is None:
             return 0
         if target_precision != PrecisionState.BF16:
-            raise ValueError(
-                "ReFlexKV phase-1 recovery only supports BF16 promotion."
-            )
+            raise ValueError("ReFlexKV phase-1 recovery only supports BF16 promotion.")
         if request_id not in self.req_to_blocks:
             return 0
 
@@ -714,16 +707,11 @@ class SingleTypeKVCacheManager(ABC):
                 continue
             if page_idx in pending_pages:
                 continue
-            precision, physical_id = decode_block_table_entry(
-                encoded_ids[page_idx]
-            )
+            precision, physical_id = decode_block_table_entry(encoded_ids[page_idx])
             if precision != PrecisionState.INT4:
                 continue
             artifact = artifacts.get(page_idx)
-            if (
-                artifact is None
-                or artifact.recovery_class == RecoveryClass.NONE
-            ):
+            if artifact is None or artifact.recovery_class == RecoveryClass.NONE:
                 continue
             if artifact.int4_block_id != physical_id:
                 raise RuntimeError(
@@ -781,9 +769,7 @@ class SingleTypeKVCacheManager(ABC):
         if limit <= 0:
             return 0
         prefill_page_risks_by_request = prefill_page_risks_by_request or {}
-        remaining_decode_tokens_by_request = (
-            remaining_decode_tokens_by_request or {}
-        )
+        remaining_decode_tokens_by_request = remaining_decode_tokens_by_request or {}
         min_remaining_decode_tokens = max(0, int(min_remaining_decode_tokens))
 
         candidates: list[tuple[float, int, str, int]] = []
@@ -803,9 +789,7 @@ class SingleTypeKVCacheManager(ABC):
                 if not self._is_reflex_recoverable_page(request_id, page_idx):
                     continue
                 risk = (
-                    0.5
-                    if page_idx >= len(page_risks)
-                    else float(page_risks[page_idx])
+                    0.5 if page_idx >= len(page_risks) else float(page_risks[page_idx])
                 )
                 candidates.append((-risk, -remaining_decode, request_id, page_idx))
 
@@ -872,9 +856,7 @@ class SingleTypeKVCacheManager(ABC):
         allow_partial_prefill_demotion = (
             request_id in allow_partial_prefill_demotion_request_ids
         )
-        if request_id in protected_request_ids:
-            num_sealed_pages = 0
-        elif (
+        if request_id in protected_request_ids or (
             prompt_tokens is not None
             and computed_tokens < prompt_tokens
             and not allow_partial_prefill_demotion
@@ -960,9 +942,7 @@ class SingleTypeKVCacheManager(ABC):
                             else RecoveryClass.NONE
                         ),
                         has_recovery_artifact=artifact is not None,
-                        recovery_tier=(
-                            artifact.tier if artifact is not None else None
-                        ),
+                        recovery_tier=(artifact.tier if artifact is not None else None),
                         recovery_source_bf16_block_id=(
                             artifact.source_bf16_block_id
                             if artifact is not None
@@ -1020,9 +1000,7 @@ class SingleTypeKVCacheManager(ABC):
             return counts
 
         request_ids = (
-            [request_id]
-            if request_id is not None
-            else list(self.req_to_blocks.keys())
+            [request_id] if request_id is not None else list(self.req_to_blocks.keys())
         )
         for req_id in request_ids:
             if req_id not in self.req_to_blocks:
@@ -1054,12 +1032,10 @@ class SingleTypeKVCacheManager(ABC):
                     self.req_to_reflex_landing_int4_ids.get(req_id, ()),
                 )
             )
-            counts["RELEASE_PENDING"] += (
-                len(
-                    self._pending_reflex_bf16_release_pages_by_request.get(
-                        req_id,
-                        set(),
-                    )
+            counts["RELEASE_PENDING"] += len(
+                self._pending_reflex_bf16_release_pages_by_request.get(
+                    req_id,
+                    set(),
                 )
             )
         return counts
@@ -1072,9 +1048,7 @@ class SingleTypeKVCacheManager(ABC):
             return []
 
         request_ids = (
-            [request_id]
-            if request_id is not None
-            else list(self.req_to_blocks.keys())
+            [request_id] if request_id is not None else list(self.req_to_blocks.keys())
         )
         violations: list[str] = []
         for req_id in request_ids:
@@ -1088,9 +1062,7 @@ class SingleTypeKVCacheManager(ABC):
 
             blocks = self.req_to_blocks[req_id]
             encoded_ids = self.req_to_reflex_block_ids[req_id]
-            landing_pages = set(
-                self.req_to_reflex_landing_page_indices.get(req_id, ())
-            )
+            landing_pages = set(self.req_to_reflex_landing_page_indices.get(req_id, ()))
             if len(blocks) != len(encoded_ids):
                 violations.append(
                     "ReFlexKV invariant violation: "
@@ -1151,9 +1123,7 @@ class SingleTypeKVCacheManager(ABC):
                         f"outside request={req_id}: page={page_idx}."
                     )
                     continue
-                precision, physical_id = decode_block_table_entry(
-                    encoded_ids[page_idx]
-                )
+                precision, physical_id = decode_block_table_entry(encoded_ids[page_idx])
                 if precision != PrecisionState.INT4:
                     violations.append(
                         "ReFlexKV invariant violation: recovery artifact is "
@@ -1261,9 +1231,7 @@ class SingleTypeKVCacheManager(ABC):
             if should_store_shadow:
                 recovery_shadow_counts_by_request[demotion.request_id] += 1
             recovery_class = (
-                RecoveryClass.BF16_SHADOW
-                if should_store_shadow
-                else RecoveryClass.NONE
+                RecoveryClass.BF16_SHADOW if should_store_shadow else RecoveryClass.NONE
             )
             demotion = ReflexDemotion(
                 request_id=demotion.request_id,
@@ -1288,11 +1256,7 @@ class SingleTypeKVCacheManager(ABC):
                 demotion.request_id,
                 demotion.page_idx,
                 demotion.is_prompt_page,
-                (
-                    "none"
-                    if demotion.prompt_pages is None
-                    else demotion.prompt_pages
-                ),
+                ("none" if demotion.prompt_pages is None else demotion.prompt_pages),
                 demotion.bf16_block_id,
                 demotion.int4_block_id,
                 (
@@ -1393,19 +1357,13 @@ class SingleTypeKVCacheManager(ABC):
         allow_partial_prefill_demotion_request_ids = (
             allow_partial_prefill_demotion_request_ids or set()
         )
-        protected_prompt_pages_by_request = (
-            protected_prompt_pages_by_request or {}
-        )
+        protected_prompt_pages_by_request = protected_prompt_pages_by_request or {}
         protected_pages_by_request = protected_pages_by_request or {}
         sealed_pages_by_request = sealed_pages_by_request or {}
-        remote_inflight_pages_by_request = (
-            remote_inflight_pages_by_request or {}
-        )
+        remote_inflight_pages_by_request = remote_inflight_pages_by_request or {}
         prefill_page_risks_by_request = prefill_page_risks_by_request or {}
         compressible_pages_by_request = compressible_pages_by_request or {}
-        copy_on_demote_pages_by_request = (
-            copy_on_demote_pages_by_request or {}
-        )
+        copy_on_demote_pages_by_request = copy_on_demote_pages_by_request or {}
         request_pages: dict[str, list[ReflexPageMeta]] = {}
         for request_id, blocks in self.req_to_blocks.items():
             self._ensure_reflex_block_ids(request_id)
@@ -1417,9 +1375,7 @@ class SingleTypeKVCacheManager(ABC):
                 int(sealed_pages_by_request.get(request_id, 0) or 0),
             )
             prompt_pages = (
-                None
-                if prompt_tokens is None
-                else cdiv(prompt_tokens, self.block_size)
+                None if prompt_tokens is None else cdiv(prompt_tokens, self.block_size)
             )
             page_risks = prefill_page_risks_by_request.get(request_id)
             compressible_pages = compressible_pages_by_request.get(request_id)
@@ -1440,9 +1396,7 @@ class SingleTypeKVCacheManager(ABC):
                 request_id in allow_partial_prefill_demotion_request_ids
             )
             request_protected = request_id in protected_request_ids
-            if request_protected:
-                num_sealed_pages = 0
-            elif (
+            if request_protected or (
                 prompt_tokens is not None
                 and computed_tokens < prompt_tokens
                 and not allow_partial_prefill_demotion
@@ -1462,9 +1416,7 @@ class SingleTypeKVCacheManager(ABC):
             pages: list[ReflexPageMeta] = []
             for page_idx, encoded_id in enumerate(encoded_ids):
                 precision, physical_id = decode_block_table_entry(encoded_id)
-                is_prompt_page = (
-                    prompt_pages is not None and page_idx < prompt_pages
-                )
+                is_prompt_page = prompt_pages is not None and page_idx < prompt_pages
                 if precision == PrecisionState.INT4:
                     pages.append(
                         ReflexPageMeta(
@@ -1553,12 +1505,10 @@ class SingleTypeKVCacheManager(ABC):
             set(),
         ).discard(demotion.page_idx)
         self._pending_reflex_bf16_releases.append(block)
-        self._pending_reflex_bf16_release_count_by_request[
-            demotion.request_id
-        ] += 1
-        self._pending_reflex_bf16_release_pages_by_request[
-            demotion.request_id
-        ].add(demotion.page_idx)
+        self._pending_reflex_bf16_release_count_by_request[demotion.request_id] += 1
+        self._pending_reflex_bf16_release_pages_by_request[demotion.request_id].add(
+            demotion.page_idx
+        )
         blocks[demotion.page_idx] = self._null_block
         encoded_ids[demotion.page_idx] = demotion.encoded_block_table_id
 
@@ -1567,9 +1517,8 @@ class SingleTypeKVCacheManager(ABC):
             return
         for encoded_id in self.req_to_reflex_block_ids.get(request_id, ()):
             precision, physical_id = decode_block_table_entry(encoded_id)
-            if (
-                precision == PrecisionState.INT4
-                and self.reflex_int4_pool.is_allocated(physical_id)
+            if precision == PrecisionState.INT4 and self.reflex_int4_pool.is_allocated(
+                physical_id
             ):
                 self.reflex_int4_pool.free(physical_id)
 

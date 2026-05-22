@@ -8,16 +8,16 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from vllm.v1.core.precision_kv.run_optimizer import (
+    DualPriceState,
+    DualRunOptimizer,
+)
 from vllm.v1.core.precision_kv.types import (
     Int4BlockPool,
     PrecisionState,
     ReflexDemotion,
     ReflexPageMeta,
     encode_int4_block_id,
-)
-from vllm.v1.core.precision_kv.run_optimizer import (
-    DualPriceState,
-    DualRunOptimizer,
 )
 
 
@@ -50,38 +50,28 @@ class ReflexCandidateBreakdown:
     int4_free_blocks: int = 0
     frontier_optimizer_budget: int = 0
 
-    def __add__(self, other: "ReflexCandidateBreakdown"):
+    def __add__(self, other: ReflexCandidateBreakdown):
         return ReflexCandidateBreakdown(
-            raw_bf16_pages=(
-                self.raw_bf16_pages + other.raw_bf16_pages
-            ),
-            open_bf16_pages=(
-                self.open_bf16_pages + other.open_bf16_pages
-            ),
+            raw_bf16_pages=(self.raw_bf16_pages + other.raw_bf16_pages),
+            open_bf16_pages=(self.open_bf16_pages + other.open_bf16_pages),
             remote_inflight_bf16_pages=(
-                self.remote_inflight_bf16_pages
-                + other.remote_inflight_bf16_pages
+                self.remote_inflight_bf16_pages + other.remote_inflight_bf16_pages
             ),
             open_tail_bf16_pages=(
                 self.open_tail_bf16_pages + other.open_tail_bf16_pages
             ),
             request_protected_bf16_pages=(
-                self.request_protected_bf16_pages
-                + other.request_protected_bf16_pages
+                self.request_protected_bf16_pages + other.request_protected_bf16_pages
             ),
-            shared_bf16_pages=(
-                self.shared_bf16_pages + other.shared_bf16_pages
-            ),
+            shared_bf16_pages=(self.shared_bf16_pages + other.shared_bf16_pages),
             prompt_protected_bf16_pages=(
-                self.prompt_protected_bf16_pages
-                + other.prompt_protected_bf16_pages
+                self.prompt_protected_bf16_pages + other.prompt_protected_bf16_pages
             ),
             copy_on_demote_pages=(
                 self.copy_on_demote_pages + other.copy_on_demote_pages
             ),
             eligible_full_unshared_pages=(
-                self.eligible_full_unshared_pages
-                + other.eligible_full_unshared_pages
+                self.eligible_full_unshared_pages + other.eligible_full_unshared_pages
             ),
             after_initial_recent_protection=(
                 self.after_initial_recent_protection
@@ -102,12 +92,10 @@ class ReflexCandidateBreakdown:
                 self.after_request_budget_cap + other.after_request_budget_cap
             ),
             after_sparse_window_quota=(
-                self.after_sparse_window_quota
-                + other.after_sparse_window_quota
+                self.after_sparse_window_quota + other.after_sparse_window_quota
             ),
             after_frontier_optimizer=(
-                self.after_frontier_optimizer
-                + other.after_frontier_optimizer
+                self.after_frontier_optimizer + other.after_frontier_optimizer
             ),
             after_int4_pool_limit=(
                 self.after_int4_pool_limit + other.after_int4_pool_limit
@@ -115,8 +103,7 @@ class ReflexCandidateBreakdown:
             selected_actual=self.selected_actual + other.selected_actual,
             int4_free_blocks=self.int4_free_blocks + other.int4_free_blocks,
             frontier_optimizer_budget=(
-                self.frontier_optimizer_budget
-                + other.frontier_optimizer_budget
+                self.frontier_optimizer_budget + other.frontier_optimizer_budget
             ),
         )
 
@@ -263,8 +250,7 @@ class DistanceDemotionPlanner:
             )
         if sparse_window_pages < 0:
             raise ValueError(
-                "sparse_window_pages must be non-negative, got "
-                f"{sparse_window_pages}."
+                f"sparse_window_pages must be non-negative, got {sparse_window_pages}."
             )
         if max_demote_per_window < 0:
             raise ValueError(
@@ -300,9 +286,7 @@ class DistanceDemotionPlanner:
         *,
         target_bf16_blocks: int,
         int4_pool: Int4BlockPool,
-        request_precision_budgets: (
-            Mapping[str, RequestPrecisionBudget] | None
-        ) = None,
+        request_precision_budgets: (Mapping[str, RequestPrecisionBudget] | None) = None,
         dry_run: bool = False,
     ) -> ReflexDemotionPlan:
         if target_bf16_blocks <= 0:
@@ -337,8 +321,7 @@ class DistanceDemotionPlanner:
         request_items = list(request_pages.items())
         if request_precision_budgets:
             request_order = {
-                request_id: order
-                for order, (request_id, _) in enumerate(request_items)
+                request_id: order for order, (request_id, _) in enumerate(request_items)
             }
             request_items.sort(
                 key=lambda item: (
@@ -361,10 +344,7 @@ class DistanceDemotionPlanner:
             existing_prompt_int4_pages = sum(
                 1
                 for page in pages
-                if (
-                    page.precision == PrecisionState.INT4
-                    and page.is_prompt_page
-                )
+                if (page.precision == PrecisionState.INT4 and page.is_prompt_page)
             )
             existing_decode_int4_pages = max(
                 0,
@@ -372,9 +352,7 @@ class DistanceDemotionPlanner:
             )
             request_budget = request_precision_budgets.get(request_id)
             if request_budget is None:
-                max_int4_pages = int(
-                    num_pages * self.max_int4_fraction_per_request
-                )
+                max_int4_pages = int(num_pages * self.max_int4_fraction_per_request)
                 release_budget_blocks = None
                 max_prompt_int4_pages = None
                 max_decode_int4_pages = None
@@ -384,9 +362,7 @@ class DistanceDemotionPlanner:
                 release_budget_blocks = request_budget.release_budget_blocks
                 max_prompt_int4_pages = request_budget.max_prompt_int4_pages
                 max_decode_int4_pages = request_budget.max_decode_int4_pages
-                quality_debt_budget_pages = (
-                    request_budget.quality_debt_budget_pages
-                )
+                quality_debt_budget_pages = request_budget.quality_debt_budget_pages
 
             raw_pages = [
                 page
@@ -402,10 +378,7 @@ class DistanceDemotionPlanner:
                 for page in raw_pages
                 if (
                     page.is_full
-                    and (
-                        not page.is_shared
-                        or page.copy_on_demote
-                    )
+                    and (not page.is_shared or page.copy_on_demote)
                     and not page.is_request_protected
                     and not page.is_page_protected
                     and not page.is_prompt_protected
@@ -451,15 +424,11 @@ class DistanceDemotionPlanner:
                     0,
                     int(quality_debt_budget_pages) - existing_int4_pages,
                 )
-                quality_capped_pages = fraction_capped_pages[
-                    :quality_debt_remaining
-                ]
+                quality_capped_pages = fraction_capped_pages[:quality_debt_remaining]
             else:
                 quality_capped_pages = fraction_capped_pages
             if release_budget_blocks is not None and not self.emergency_release:
-                capped_pages = quality_capped_pages[
-                    : max(0, release_budget_blocks)
-                ]
+                capped_pages = quality_capped_pages[: max(0, release_budget_blocks)]
             else:
                 capped_pages = quality_capped_pages
 
@@ -481,10 +450,7 @@ class DistanceDemotionPlanner:
                     for page in capped_pages:
                         window_id = page.page_idx // self.sparse_window_pages
                         window_key = (request_id, window_id)
-                        if (
-                            candidate_by_window.get(window_key, 0)
-                            >= per_window_limit
-                        ):
+                        if candidate_by_window.get(window_key, 0) >= per_window_limit:
                             continue
                         candidate_by_window[window_key] = (
                             candidate_by_window.get(window_key, 0) + 1
@@ -499,10 +465,7 @@ class DistanceDemotionPlanner:
                     if sparse_window_enabled:
                         window_id = page.page_idx // self.sparse_window_pages
                         window_key = (request_id, window_id)
-                        if (
-                            candidate_by_window.get(window_key, 0)
-                            >= per_window_limit
-                        ):
+                        if candidate_by_window.get(window_key, 0) >= per_window_limit:
                             continue
                         candidate_by_window[window_key] = (
                             candidate_by_window.get(window_key, 0) + 1
@@ -535,9 +498,7 @@ class DistanceDemotionPlanner:
             shared_bf16_pages += sum(
                 1
                 for page in raw_pages
-                if page.is_full
-                and page.is_shared
-                and not page.copy_on_demote
+                if page.is_full and page.is_shared and not page.copy_on_demote
             )
             prompt_protected_bf16_pages += sum(
                 1
@@ -551,9 +512,7 @@ class DistanceDemotionPlanner:
             copy_on_demote_pages += sum(
                 1
                 for page in raw_pages
-                if page.is_full
-                and page.is_shared
-                and page.copy_on_demote
+                if page.is_full and page.is_shared and page.copy_on_demote
             )
             eligible_full_unshared_pages += len(eligible_pages)
             after_initial_recent_protection += len(protected_pages)
@@ -628,9 +587,7 @@ class DistanceDemotionPlanner:
                     page_idx=page.page_idx,
                     bf16_block_id=page.bf16_block_id,
                     int4_block_id=int4_block_id,
-                    encoded_block_table_id=encode_int4_block_id(
-                        int4_block_id
-                    ),
+                    encoded_block_table_id=encode_int4_block_id(int4_block_id),
                     is_prompt_page=page.is_prompt_page,
                     prompt_pages=prompt_pages_by_request.get(
                         page.request_id,
@@ -714,7 +671,7 @@ class DistanceDemotionPlanner:
             return (page.page_idx,)
         if self.selection_policy == "random":
             digest = hashlib.blake2b(
-                f"{page.request_id}:{page.page_idx}".encode("utf-8"),
+                f"{page.request_id}:{page.page_idx}".encode(),
                 digest_size=8,
             ).digest()
             return (int.from_bytes(digest, "big"), page.page_idx)

@@ -90,21 +90,23 @@ Dataset 结果：
 - 已删除并不再作为当前机制：decode attention mass profile、attention relevance 触发的 precision fault recovery、synthetic recovery relevance fallback、`RecoveryQualityEvaluator`、`precision_kv/recovery.py`、相关 worker/model output/kernel 字段和 profiling/accuracy 汇总列。
 - 当前 recovery 只能表述为 “BF16 shadow + budgeted background promotion plumbing”，不能表述为“实时精度故障检测与恢复闭环”。
 
-当前 n=100 Burst-like mixed workload 结果：
+当前最新 post-optimization n=100 Burst-like mixed workload 结果：
 
 | metric | BF16 stable | ReFlexKV frontier-dual |
 |---|---:|---:|
 | samples | 100 | 100 |
 | completed | 100 | 100 |
-| goodput | 0.0337 req/s | 0.0873 req/s |
-| weighted avg latency | 113.57s | 43.44s |
-| weighted avg score | 0.3402 | 0.3581 |
+| goodput | 0.0337 req/s | 0.0968 req/s |
+| weighted avg latency | 113.57s | 39.14s |
+| weighted avg score | 0.3402 | 0.3493 |
 | admission_blocked_total | N/A | 0 |
 | admission_infeasible_total | N/A | 0 |
-| demotion_event_count | N/A | 920 |
-| demoted_pages_total | N/A | 14922 |
-| max_int4_ratio | N/A | 0.8698 |
-| background_promoted_pages_total | N/A | 335 |
+| admission_control_event_count | N/A | 108 |
+| page_metadata_plan_event_count | N/A | 817 |
+| demotion_event_count | N/A | 236 |
+| demoted_pages_total | N/A | 15111 |
+| max_int4_ratio | N/A | 0.8743 |
+| background_promoted_pages_total | N/A | 275 |
 
 数据集构成：
 
@@ -116,8 +118,9 @@ Dataset 结果：
 
 这个结果可以支持的结论：
 
-- ReFlexKV 在该压力 workload 下完成了所有请求，并且相比 BF16 stable baseline 有约 2.6x goodput、约 2.6x weighted latency 改善。
+- ReFlexKV 在该压力 workload 下完成了所有请求，并且相比 BF16 stable baseline 有约 2.9x goodput、约 2.9x weighted latency 改善。
 - 当前分数没有下降，但不能写成“ReFlexKV 提升精度”，因为 score 差异可能来自调度、截断边界、完成时序和生成路径差异。
+- 最新 scheduler/planner 优化显著降低了控制面事件和 demotion GPU time，但端到端 duration 基本持平，说明当前 n=100 主要瓶颈已经转向 decode 计算/长输出本身。
 - 主要收益应归因于 admission + demotion + mixed precision KV，而不是 recovery。background promotion 真实触发过，但没有 recovery on/off 消融。
 
 本轮清理验证：
@@ -128,6 +131,217 @@ Dataset 结果：
 | 删除旧 recovery 入口 + background promotion targeted tests | 4 passed |
 | profiling/accuracy regression subset | 210 passed |
 | CUDA direct attention tests | 2 passed |
+
+### 1.4 2026-05-22 post-cleanup INT4 测试与 scheduler/planner 优化
+
+#### 1.4.1 post-cleanup n=100 结果
+
+清理实时 attention/precision-fault recovery 后，重新跑了当前 INT4 主路径：
+
+```text
+outputs/accuracy/burstgpt_answerable_n100_reflex_post_cleanup_b736_2026-05-22/ablation_00_frontier_dual_reflex
+```
+
+配置：
+
+- dataset：BurstGPT-shaped n=100 manifest；
+- samples：gov_report 35、math500 40、qasper 25；
+- decode KV dtype：`reflex_int4`；
+- BF16 block override：736；
+- page selection：`frontier_dual`；
+- max concurrency：4；
+- proxy prefill max inflight：4；
+- prompt truncation：0。
+
+总体结果：
+
+| metric | value |
+|---|---:|
+| completed | 100 / 100 |
+| failures | 0 |
+| duration | 1030.20s |
+| goodput | 0.0971 req/s |
+| weighted avg latency | 38.85s |
+| weighted avg score | 0.3744 |
+| max decode KV usage | 100.0% |
+| avg decode KV usage | 66.27% |
+| max decode running | 4 |
+| avg decode running | 3.56 |
+| max decode waiting | 3 |
+| avg decode waiting | 0.21 |
+
+Dataset 结果：
+
+| dataset | samples | avg latency | score |
+|---|---:|---:|---:|
+| gov_report | 35 | 18.96s | 0.3452 |
+| math500 | 40 | 76.57s | 0.4500 |
+| qasper | 25 | 6.35s | 0.2944 |
+
+ReFlex trace：
+
+| metric | value |
+|---|---:|
+| demotion_event_count | 731 |
+| demoted_pages_total | 14904 |
+| admission_control_event_count | 5556 |
+| admission_blocked_total | 0 |
+| admission_infeasible_total | 0 |
+| admission_wait_reduction_total | 1598 |
+| page_metadata_real_risk_coverage_ratio | 1.0 |
+| recovery_plan_event_count | 385 |
+| background_promoted_pages_total | 385 |
+| demotion_gpu_ms_total | 2312.76 |
+| mean_int4_ratio | 0.3503 |
+| max_int4_ratio | 0.8667 |
+
+对比稳定 BF16 baseline：
+
+| metric | BF16 stable | post-cleanup ReFlexKV | ratio / delta |
+|---|---:|---:|---:|
+| goodput | 0.0337 req/s | 0.0971 req/s | 2.88x |
+| weighted avg latency | 113.57s | 38.85s | 2.92x lower |
+| weighted avg score | 0.3402 | 0.3744 | +0.0342 |
+
+结论仍需谨慎：score 更高不能直接写成 ReFlexKV 提升精度，只能写成在该 trace 下没有观察到 accuracy degradation。当前主要收益还是 admission + demotion + mixed precision KV。
+
+#### 1.4.2 本轮发现的问题
+
+post-cleanup run 能完整跑完，但暴露出 scheduler/planner cadence 问题：
+
+1. `admission_control_event_count=5556`，其中大量是同一个 waiting / remote chunk request 在每个 decode step 反复检查；很多记录是 `requested_release=0`、`landing_reason=bf16_fit`，没有必要进入 demotion planner。
+2. 后台 demotion 有大量小批量事件。n=100 中 `demotion_event_count=731`，`demotion_gpu_ms_total=2312.76ms`；日志中多次出现 1-2 pages 的 background demotion，单次仍要付 planning 和 kernel launch 成本。
+3. 如果 background planner 选不出 page，旧逻辑不会进入 cooldown，可能每个 step 重复做无效 `page_metadata_plan / precision_budget / candidate_breakdown`。
+
+#### 1.4.3 已实现的 scheduler/planner 修复
+
+本轮做了三个低风险修复：
+
+1. zero-deficit waiting admission 直接跳过 planner。
+   - 当 waiting request 已经 BF16 fit，`target_blocks=0` 时，`_try_reflex_int4_demotion_only_step()` 不再调用 admission planner、landing planner 和 admission trace logging。
+   - 目标是减少无意义 `admission_control` 事件和每步轮询开销。
+
+2. background pressure 使用最小 demotion batch。
+   - 新增 `SEMANTIQ_REFLEX_BACKGROUND_MIN_DEMOTIONS_PER_STEP`。
+   - 默认最小后台 batch 为 8 pages，最大仍受 `SEMANTIQ_REFLEX_BACKGROUND_DEMOTIONS_PER_STEP` / 内部 limit 限制。
+   - 目标是避免 1-page/2-page demotion 的高固定成本。
+
+3. background no-op planning 进入 cooldown。
+   - 如果 background pressure 已经尝试 planning，但 `planned_blocks=0`，也会更新 `_reflex_int4_last_demote_step`。
+   - 目标是避免没有可选页时每个 step 重复做同一轮空 planner。
+
+新增/更新单测：
+
+- `test_reflex_int4_waiting_demotion_only_step_skips_planner_when_request_fits`
+- `test_reflex_int4_background_target_uses_min_batch_under_pressure`
+- `test_reflex_int4_background_noop_demote_enters_cooldown`
+
+#### 1.4.4 post-optimization n=32 smoke
+
+优化后跑了一个较短 serving smoke：
+
+```text
+outputs/accuracy/burstgpt_answerable_n32_reflex_scheduler_opt_b736_2026-05-22/ablation_00_frontier_dual_reflex
+```
+
+结果：
+
+| metric | value |
+|---|---:|
+| completed | 32 / 32 |
+| failures | 0 |
+| duration | 336.05s |
+| goodput | 0.0952 req/s |
+| weighted avg latency | 34.58s |
+| weighted avg score | 0.4436 |
+| admission_blocked_total | 0 |
+| admission_infeasible_total | 0 |
+| demotion_event_count | 60 |
+| demoted_pages_total | 5622 |
+| demotion_gpu_ms_total | 403.38 |
+| max_int4_ratio | 0.9083 |
+
+注意：这个 n=32 smoke 覆盖了前两项 scheduler 修改；第三项 no-op cooldown 是 smoke 启动后根据日志继续修的。完整集成后的 n=100 结果见下一节。
+
+#### 1.4.5 post-optimization opt2 n=100 结果
+
+完整集成三项 scheduler/planner 修复后，又跑了一次 n=100：
+
+```text
+outputs/accuracy/burstgpt_answerable_n100_reflex_scheduler_opt2_b736_2026-05-22/ablation_00_frontier_dual_reflex
+```
+
+总体结果：
+
+| metric | value |
+|---|---:|
+| completed | 100 / 100 |
+| failures | 0 |
+| duration | 1033.00s |
+| goodput | 0.0968 req/s |
+| weighted avg latency | 39.14s |
+| weighted avg score | 0.3493 |
+| max decode KV usage | 100.0% |
+| avg decode KV usage | 65.90% |
+| max decode running | 4 |
+| avg decode running | 3.60 |
+| max decode waiting | 2 |
+| avg decode waiting | 0.18 |
+
+Dataset 结果：
+
+| dataset | samples | avg latency | score |
+|---|---:|---:|---:|
+| gov_report | 35 | 18.19s | 0.3504 |
+| math500 | 40 | 78.06s | 0.4000 |
+| qasper | 25 | 6.19s | 0.2668 |
+
+ReFlex trace：
+
+| metric | post-cleanup | scheduler opt2 | change |
+|---|---:|---:|---:|
+| admission_control_event_count | 5556 | 108 | -98.1% |
+| page_metadata_plan_event_count | 2511 | 817 | -67.5% |
+| precision_budget_event_count | 10040 | 3266 | -67.5% |
+| candidate_breakdown_event_count | 2405 | 709 | -70.5% |
+| demotion_event_count | 731 | 236 | -67.7% |
+| demotion_gpu_ms_total | 2312.76 | 969.19 | -58.1% |
+| trace_events | 81841 | 66351 | -18.9% |
+| admission_blocked_total | 0 | 0 | same |
+| admission_infeasible_total | 0 | 0 | same |
+| demoted_pages_total | 14904 | 15111 | +1.4% |
+| max_int4_ratio | 0.8667 | 0.8743 | +0.0076 |
+
+对比 BF16 stable baseline：
+
+| metric | BF16 stable | scheduler opt2 ReFlexKV | ratio / delta |
+|---|---:|---:|---:|
+| goodput | 0.0337 req/s | 0.0968 req/s | 2.87x |
+| weighted avg latency | 113.57s | 39.14s | 2.90x lower |
+| weighted avg score | 0.3402 | 0.3493 | +0.0091 |
+
+结论：
+
+- scheduler/planner 修复有效，控制面噪声明显下降，demotion event 和 migration GPU time 大幅下降。
+- 端到端 duration 没明显下降：`1030.20s -> 1033.00s`，说明这个 n=100 trace 上主要瓶颈已经不是 planner spam，而是 decode 计算、长输出和实际 attention path。
+- score 仍不能归因；只能写没有观察到 accuracy degradation。
+
+#### 1.4.6 本轮验证
+
+| check | result |
+|---|---:|
+| post-cleanup n=100 ReFlexKV serving | 100 / 100 completed |
+| post-optimization n=32 ReFlexKV smoke | 32 / 32 completed |
+| post-optimization opt2 n=100 ReFlexKV serving | 100 / 100 completed |
+| scheduler/policy/frontier/optimizer/tests | 213 passed |
+| `py_compile` touched scheduler/tests | pass |
+
+下一步建议：
+
+1. 先不要继续堆 admission planner 优化；当前控制面已经下降明显，n=100 端到端瓶颈更像 decode/mixed attention 和长输出。
+2. 下一轮应做 decode path profiling：打开 attention/kernel 级 timing，区分 BF16 attention、INT4 decode attention、dequant/metadata lookup、migration copy 的真实占比。
+3. 单独加 background promotion/shadow off ablation，确认 275 pages promotion 对 accuracy 和 latency 的影响。
+4. 如果 n=200/更高压力下 `admission_control_event_count` 或 `page_metadata_plan_event_count` 又升高，再做第二层 admission decision cache。
 
 ## 2. 这轮根本修复：compiled prefill 下 P-side metadata 不能丢
 

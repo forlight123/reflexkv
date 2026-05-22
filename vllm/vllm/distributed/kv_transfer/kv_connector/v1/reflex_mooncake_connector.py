@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Mooncake connector name used by ReFlexKV PD experiments.
 
 ReFlexKV precision changes are now confined to the decode worker. The P/D

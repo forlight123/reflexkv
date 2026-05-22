@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Lightweight prefill-side page scoring for ReFlexKV demotion.
 
 This module intentionally records only page-level summaries. It never
@@ -24,7 +25,6 @@ from vllm.v1.core.precision_kv.risk import (
     PageRiskSummary,
     PrefillRiskEstimator,
 )
-
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
@@ -297,8 +297,7 @@ class ReflexPrefillMetadataRecorder:
             fallback_anchor = torch.zeros_like(q_anchor)
             page_anchors = [
                 (
-                    page_anchor_sums[page_idx]
-                    / float(page_anchor_counts[page_idx])
+                    page_anchor_sums[page_idx] / float(page_anchor_counts[page_idx])
                     if page_idx in page_anchor_sums
                     else fallback_anchor
                 )
@@ -311,9 +310,7 @@ class ReflexPrefillMetadataRecorder:
                 block_size=block_size,
             )
         fallback = max(finite_scores) + 1.0
-        scores = [
-            score if math.isfinite(score) else fallback for score in page_scores
-        ]
+        scores = [score if math.isfinite(score) else fallback for score in page_scores]
         compressible_pages = set(
             sorted(range(len(scores)), key=lambda idx: (scores[idx], idx))[
                 : max(1, int(len(scores) * 0.25))
