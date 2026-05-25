@@ -1,3 +1,18 @@
 {
-  "math500": "boxed_accuracy"
+  "math500": "boxed_accuracy",
+  "gsm8k": "boxed_accuracy",
+  "ruler_niah_single_1_4k": "ruler_string_match",
+  "ruler_niah_single_1_8k": "ruler_string_match",
+  "ruler_niah_single_1_16k": "ruler_string_match",
+  "ruler_niah_single_1_32k": "ruler_string_match",
+  "ruler_niah_multikey_2_4k": "ruler_string_match",
+  "ruler_niah_multikey_2_8k": "ruler_string_match",
+  "ruler_niah_multikey_2_16k": "ruler_string_match",
+  "ruler_niah_multikey_2_32k": "ruler_string_match",
+  "ruler_niah_multikey_3_4k": "ruler_string_match",
+  "ruler_niah_multikey_3_8k": "ruler_string_match",
+  "ruler_niah_multikey_3_16k": "ruler_string_match",
+  "ruler_niah_multikey_3_32k": "ruler_string_match",
+  "aime24": "boxed_accuracy",
+  "aime25": "boxed_accuracy"
 }

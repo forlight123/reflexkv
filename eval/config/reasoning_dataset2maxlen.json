@@ -1,3 +1,18 @@
 {
-  "math500": 4096
+  "math500": 4096,
+  "gsm8k": 1024,
+  "ruler_niah_single_1_4k": 64,
+  "ruler_niah_single_1_8k": 64,
+  "ruler_niah_single_1_16k": 64,
+  "ruler_niah_single_1_32k": 64,
+  "ruler_niah_multikey_2_4k": 64,
+  "ruler_niah_multikey_2_8k": 64,
+  "ruler_niah_multikey_2_16k": 64,
+  "ruler_niah_multikey_2_32k": 64,
+  "ruler_niah_multikey_3_4k": 64,
+  "ruler_niah_multikey_3_8k": 64,
+  "ruler_niah_multikey_3_16k": 64,
+  "ruler_niah_multikey_3_32k": 64,
+  "aime24": 4096,
+  "aime25": 4096
 }

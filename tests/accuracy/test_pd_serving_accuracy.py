@@ -74,6 +74,12 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     )
 
 
+def test_pd_serving_accuracy_defaults_to_compiled_serving_path():
+    args = runner.parse_args(["--task", "longbench", "--dataset", "qasper"])
+
+    assert args.enforce_eager is False
+
+
 def test_server_commands_use_pd_reflex_defaults(tmp_path):
     args = _args(tmp_path)
 

@@ -121,6 +121,12 @@ def _write_fixture_data(args: argparse.Namespace) -> None:
     )
 
 
+def test_mixed_accuracy_defaults_to_compiled_serving_path():
+    args = mixed.parse_args([])
+
+    assert args.enforce_eager is False
+
+
 def test_load_mixed_workload_assigns_slo_and_shuffles_across_tasks(tmp_path):
     args = _args(tmp_path)
     _write_fixture_data(args)

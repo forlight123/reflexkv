@@ -201,15 +201,34 @@ def test_resolve_reasoning_max_samples_uses_cli_limit_when_provided(tmp_path):
     assert resolve_reasoning_max_samples("math500", str(tmp_path), max_samples=7) == 7
 
 
-def test_reasoning_configs_register_math500_values():
+def test_reasoning_configs_register_paper_reasoning_values():
     config_dir = "eval/config"
+    expected_prompt = (
+        "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n"
+        "{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}."
+    )
 
     assert _read_json(f"{config_dir}/reasoning_dataset2prompt.json") == {
-        "math500": (
-            "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n"
-            "{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}."
-        )
+        "math500": expected_prompt,
+        "gsm8k": expected_prompt,
+        "aime24": expected_prompt,
+        "aime25": expected_prompt,
     }
-    assert _read_json(f"{config_dir}/reasoning_dataset2maxlen.json") == {"math500": 4096}
-    assert _read_json(f"{config_dir}/reasoning_dataset2metric.json") == {"math500": "boxed_accuracy"}
-    assert _read_json(f"{config_dir}/reasoning_dataset2samples.json") == {"math500": 500}
+    assert _read_json(f"{config_dir}/reasoning_dataset2maxlen.json") == {
+        "math500": 4096,
+        "gsm8k": 1024,
+        "aime24": 4096,
+        "aime25": 4096,
+    }
+    assert _read_json(f"{config_dir}/reasoning_dataset2metric.json") == {
+        "math500": "boxed_accuracy",
+        "gsm8k": "boxed_accuracy",
+        "aime24": "boxed_accuracy",
+        "aime25": "boxed_accuracy",
+    }
+    assert _read_json(f"{config_dir}/reasoning_dataset2samples.json") == {
+        "math500": 500,
+        "gsm8k": 1319,
+        "aime24": 30,
+        "aime25": 30,
+    }

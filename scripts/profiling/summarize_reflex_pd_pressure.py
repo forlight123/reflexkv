@@ -271,6 +271,66 @@ def count_trace_field_values(
     return counts
 
 
+def _add_phase_ms(
+    phase_values: dict[str, list[float]],
+    phase: str,
+    ms: Any,
+) -> None:
+    if not phase or not isinstance(ms, (int, float)):
+        return
+    phase_values.setdefault(phase, []).append(float(ms))
+
+
+def _summarize_phase_profile(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    phase_values: dict[str, list[float]] = {}
+    stage_events = [event for event in events if event.get("event") == "stage_profile"]
+    has_planner_stage = any(event.get("phase") == "planner" for event in stage_events)
+
+    for event in stage_events:
+        _add_phase_ms(phase_values, str(event.get("phase", "")), event.get("ms"))
+
+    if not has_planner_stage:
+        for event in events:
+            if event.get("event") == "planned":
+                _add_phase_ms(phase_values, "planner", event.get("plan_ms"))
+
+    for event in events:
+        event_name = event.get("event")
+        if event_name == "demote_exec":
+            _add_phase_ms(phase_values, "demotion", event.get("gpu_ms"))
+        elif event_name == "landing_materialize":
+            _add_phase_ms(phase_values, "mixed_landing", event.get("gpu_ms"))
+        elif event_name == "recovery_exec":
+            _add_phase_ms(phase_values, "recovery", event.get("cpu_ms"))
+        elif event_name == "attention":
+            _add_phase_ms(phase_values, "attention", event.get("gpu_ms"))
+        elif event_name == "step":
+            step_phase = event.get("phase")
+            if step_phase == "decode":
+                _add_phase_ms(
+                    phase_values,
+                    "decode_attention_forward",
+                    event.get("forward_gpu_ms"),
+                )
+            elif step_phase == "prefill_or_mixed":
+                _add_phase_ms(
+                    phase_values,
+                    "prefill_forward",
+                    event.get("forward_gpu_ms"),
+                )
+
+    return {
+        phase: {
+            "count": len(values),
+            "ms_total": sum(values),
+            "ms_mean": _mean(values),
+            "ms_max": max(values) if values else None,
+        }
+        for phase, values in sorted(phase_values.items())
+        if values
+    }
+
+
 def parse_reflex_trace_events(lines: Iterable[str], *, run: str = "") -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line_no, line in enumerate(lines, start=1):
@@ -987,6 +1047,7 @@ def _trace_stats(events: list[dict[str, Any]]) -> dict[str, Any]:
             for event in attention_events
             if isinstance(event.get("gpu_ms", 0.0), (int, float))
         ),
+        "phase_profile": _summarize_phase_profile(events),
         "trace_events": len(events),
     }
 

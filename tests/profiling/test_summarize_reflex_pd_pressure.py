@@ -93,6 +93,9 @@ class SummarizeReFlexPDPressureTest(unittest.TestCase):
                         "ReFlexKV trace recovery_plan reason=background_promotion promoted_pages=1 free_ratio=0.6500.",
                         "ReFlexKV trace recovery_exec pages=1 layer_copies=32 cpu_ms=0.25.",
                         "ReFlexKV trace demote_exec pages=258 layer_copies=8256 kernel_launches=32 cpu_ms=1.908 gpu_ms=1.857.",
+                        "ReFlexKV trace stage_profile request=req-0 phase=planner ms=3.336 reason=admission_waiting.",
+                        "ReFlexKV trace stage_profile request=req-0 phase=decode_waiting ms=40.000 source=proxy.",
+                        "ReFlexKV trace stage_profile request=req-0 phase=decode_running ms=80.000 source=proxy.",
                         "ReFlexKV trace step=4 phase=decode reqs=2 scheduled_tokens=2 max_query_len=1 max_seq_len=4098 demotions=0 kv_blocks_total=514 kv_blocks_bf16=511 kv_blocks_int4=3 kv_int4_ratio=0.0058 preprocess_cpu_ms=2.585 forward_cpu_ms=781.198 forward_gpu_ms=781.145 postprocess_cpu_ms=1.346 postprocess_gpu_ms=1.311.",
                         "ReFlexKV trace step=5 phase=decode reqs=2 scheduled_tokens=2 max_query_len=1 max_seq_len=4099 demotions=1 kv_blocks_total=514 kv_blocks_bf16=256 kv_blocks_int4=258 kv_int4_ratio=0.5019 preprocess_cpu_ms=1.0 forward_cpu_ms=700.0 forward_gpu_ms=699.5 postprocess_cpu_ms=1.0 postprocess_gpu_ms=1.0.",
                         "ReFlexKV trace attention kernel=3d use_reflex_int4=True pages=258 gpu_ms=2.5.",
@@ -228,6 +231,26 @@ class SummarizeReFlexPDPressureTest(unittest.TestCase):
             self.assertEqual(summary["max_forward_gpu_ms"], 781.145)
             self.assertEqual(summary["attention_trace_event_count"], 1)
             self.assertEqual(summary["attention_gpu_ms_total"], 2.5)
+            self.assertEqual(
+                summary["phase_profile"]["planner"]["ms_total"],
+                3.336,
+            )
+            self.assertEqual(
+                summary["phase_profile"]["decode_waiting"]["ms_total"],
+                40.0,
+            )
+            self.assertEqual(
+                summary["phase_profile"]["decode_running"]["ms_total"],
+                80.0,
+            )
+            self.assertEqual(
+                summary["phase_profile"]["decode_attention_forward"]["count"],
+                2,
+            )
+            self.assertEqual(
+                summary["phase_profile"]["attention"]["ms_total"],
+                2.5,
+            )
 
             self.assertEqual(timeline[0]["elapsed_s"], 0.0)
             self.assertEqual(timeline[1]["elapsed_s"], 1.5)
@@ -235,7 +258,7 @@ class SummarizeReFlexPDPressureTest(unittest.TestCase):
             self.assertEqual(timeline[1]["decode_running"], 2)
             self.assertEqual(timeline[1]["decode_waiting"], 3)
 
-            self.assertEqual([event["event"] for event in traces], ["planned", "planned", "precision_budget", "candidate_breakdown", "admission_control", "admission_control", "landing_contract", "landing_policy", "page_metadata_produce", "page_metadata_receive", "page_metadata_plan", "landing_materialize", "landing_commit", "recovery_plan", "recovery_exec", "demote_exec", "step", "step", "attention"])
+            self.assertEqual([event["event"] for event in traces], ["planned", "planned", "precision_budget", "candidate_breakdown", "admission_control", "admission_control", "landing_contract", "landing_policy", "page_metadata_produce", "page_metadata_receive", "page_metadata_plan", "landing_materialize", "landing_commit", "recovery_plan", "recovery_exec", "demote_exec", "stage_profile", "stage_profile", "stage_profile", "step", "step", "attention"])
             self.assertEqual(traces[0]["released_bf16_blocks"], 258)
             self.assertEqual(traces[1]["released_bf16_blocks"], 64)
             self.assertEqual(traces[1]["skipped_pages"], 64)
@@ -252,7 +275,7 @@ class SummarizeReFlexPDPressureTest(unittest.TestCase):
             self.assertEqual(traces[12]["committed"], 128)
             self.assertEqual(traces[14]["pages"], 1)
             self.assertEqual(traces[15]["pages"], 258)
-            self.assertEqual(traces[16]["kv_int4_ratio"], 0.0058)
+            self.assertEqual(traces[19]["kv_int4_ratio"], 0.0058)
 
     def test_missing_optional_files_yield_blank_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,6 +304,7 @@ class SummarizeReFlexPDPressureTest(unittest.TestCase):
             self.assertEqual(summary["recovery_plan_event_count"], 0)
             self.assertEqual(summary["recovery_exec_event_count"], 0)
             self.assertEqual(summary["attention_trace_event_count"], 0)
+            self.assertEqual(summary["phase_profile"], {})
             self.assertEqual(timeline, [])
             self.assertEqual(traces, [])
 

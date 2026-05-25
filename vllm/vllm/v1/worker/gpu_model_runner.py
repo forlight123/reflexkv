@@ -1120,6 +1120,12 @@ class GPUModelRunner(
         if isinstance(kv_cache_spec, EncoderOnlyAttentionSpec):
             return False
 
+        int4_counts = self._get_reflex_int4_block_counts_cpu(
+            kv_cache_gid,
+            num_reqs,
+        )
+        if int4_counts is not None:
+            return bool(np.any(int4_counts > 0))
         block_table = self.input_batch.block_table[kv_cache_gid]
         table = block_table.get_numpy_array()
         num_blocks_per_row = np.asarray(block_table.num_blocks_per_row)
@@ -1128,6 +1134,19 @@ class GPUModelRunner(
             if active_blocks > 0 and np.any(table[row, :active_blocks] < 0):
                 return True
         return False
+
+    def _get_reflex_int4_block_counts_cpu(
+        self,
+        kv_cache_gid: int,
+        num_reqs: int,
+    ) -> np.ndarray | None:
+        if self.cache_config.cache_dtype != "reflex_int4" or num_reqs <= 0:
+            return None
+        block_table = self.input_batch.block_table[kv_cache_gid]
+        int4_counts = getattr(block_table, "num_reflex_int4_blocks_per_row", None)
+        if int4_counts is None:
+            return None
+        return np.asarray(int4_counts[:num_reqs], dtype=np.int32).copy()
 
     @contextmanager
     def _reflex_prefill_metadata_context(
@@ -2515,6 +2534,9 @@ class GPUModelRunner(
             causal=True,
             is_prefilling=is_prefilling,
             has_reflex_int4_blocks=self._has_reflex_int4_blocks(0, num_reqs),
+            reflex_int4_block_counts_cpu=(
+                self._get_reflex_int4_block_counts_cpu(0, num_reqs)
+            ),
         )
 
         if self.dcp_world_size > 1:

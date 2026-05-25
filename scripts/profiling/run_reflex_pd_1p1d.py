@@ -62,10 +62,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--proxy-prefill-max-inflight",
         type=int,
-        default=2,
+        default=0,
         help=(
-            "Maximum end-to-end requests the proxy lets hold P-side prefill "
-            "KV concurrently. Use 0 to disable proxy-side prefill backpressure."
+            "Maximum producer-side prefill tasks the proxy lets run "
+            "concurrently. Use 0 to let decode admission/backpressure decide."
         ),
     )
     parser.add_argument(
@@ -76,6 +76,70 @@ def parse_args() -> argparse.Namespace:
             "Seconds the proxy may wait for prefill-returned ReFlexKV metadata "
             "before starting decode. Defaults to 5s for reflex_int4 with "
             "P-side metadata enabled, otherwise 0s."
+        ),
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-policy",
+        choices=["off", "metrics"],
+        default="off",
+        help=(
+            "Proxy-side decode capacity gate. Use 'metrics' to poll decode "
+            "/metrics before admitting a new remote prefill."
+        ),
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-max-kv-usage",
+        type=float,
+        default=0.90,
+        help="Maximum decode KV usage ratio before proxy admission waits.",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-max-waiting",
+        type=int,
+        default=0,
+        help="Maximum decode waiting requests before proxy admission waits.",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-waiting-policy",
+        choices=["fixed", "adaptive"],
+        default="fixed",
+        help=(
+            "How the proxy interprets decode waiting-request backpressure. "
+            "'adaptive' allows reflex_int4 decode to admit extra pending "
+            "remote KV requests when decode KV headroom is available."
+        ),
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-adaptive-max-waiting",
+        type=int,
+        default=4,
+        help="Maximum extra waiting requests allowed by adaptive waiting policy.",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-adaptive-kv-headroom-per-waiting",
+        type=float,
+        default=0.04,
+        help="Decode KV headroom consumed per adaptive waiting slot.",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-poll-interval-sec",
+        type=float,
+        default=0.05,
+        help="Polling interval while proxy decode backpressure is active.",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-timeout-sec",
+        type=float,
+        default=300.0,
+        help="Maximum decode backpressure wait before failing open.",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-admission-settle-sec",
+        type=float,
+        default=1.0,
+        help=(
+            "Seconds after starting a decode request before the proxy releases "
+            "its local admission token and relies on decode /metrics."
         ),
     )
     parser.add_argument(
@@ -569,6 +633,79 @@ def build_proxy_cmd(args: argparse.Namespace) -> list[str]:
         str(metadata_wait_timeout),
         "--reflex-remote-chunk-tokens",
         str(max(1, int(getattr(args, "reflex_remote_chunk_tokens", 512) or 512))),
+        "--decode-backpressure-policy",
+        str(getattr(args, "proxy_decode_backpressure_policy", "off") or "off"),
+        "--decode-backpressure-max-kv-usage",
+        str(float(getattr(args, "proxy_decode_backpressure_max_kv_usage", 0.90))),
+        "--decode-backpressure-max-waiting",
+        str(int(getattr(args, "proxy_decode_backpressure_max_waiting", 0))),
+        "--decode-backpressure-waiting-policy",
+        str(getattr(args, "proxy_decode_backpressure_waiting_policy", "fixed") or "fixed"),
+        "--decode-backpressure-adaptive-max-waiting",
+        str(
+            max(
+                0,
+                int(
+                    getattr(
+                        args,
+                        "proxy_decode_backpressure_adaptive_max_waiting",
+                        4,
+                    )
+                ),
+            )
+        ),
+        "--decode-backpressure-adaptive-kv-headroom-per-waiting",
+        str(
+            max(
+                0.001,
+                float(
+                    getattr(
+                        args,
+                        "proxy_decode_backpressure_adaptive_kv_headroom_per_waiting",
+                        0.04,
+                    )
+                ),
+            )
+        ),
+        "--decode-backpressure-poll-interval-sec",
+        str(
+            max(
+                0.001,
+                float(
+                    getattr(
+                        args,
+                        "proxy_decode_backpressure_poll_interval_sec",
+                        0.05,
+                    )
+                ),
+            )
+        ),
+        "--decode-backpressure-timeout-sec",
+        str(
+            max(
+                0.0,
+                float(
+                    getattr(
+                        args,
+                        "proxy_decode_backpressure_timeout_sec",
+                        300.0,
+                    )
+                ),
+            )
+        ),
+        "--decode-backpressure-admission-settle-sec",
+        str(
+            max(
+                0.0,
+                float(
+                    getattr(
+                        args,
+                        "proxy_decode_backpressure_admission_settle_sec",
+                        1.0,
+                    )
+                ),
+            )
+        ),
     ]
 
 

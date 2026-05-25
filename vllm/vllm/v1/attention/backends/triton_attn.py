@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """High-Performance Triton-only Attention layer."""
 
+import os
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -46,6 +47,33 @@ logger = init_logger(__name__)
 # constants
 MIN_LAUNCH_GRID_SIZE_2D = 128  # Minimum launch grid size of 2D kernel
 NUM_PAR_SOFTMAX_SEGMENTS = 16  # Number of parallel tiled softmax segments
+REFLEX_INT4_DEFAULT_3D_SEQ_THRESHOLD = 64
+
+
+def _select_seq_threshold_3d(
+    *,
+    base_threshold: int,
+    cache_dtype_str: str | None,
+    decode_cudagraph_enabled: bool,
+    capture_sizes: list[int] | None,
+) -> int:
+    desired_threshold = max(1, int(base_threshold))
+    if cache_dtype_str == "reflex_int4":
+        try:
+            reflex_threshold = int(
+                os.environ.get(
+                    "SEMANTIQ_REFLEX_INT4_3D_SEQ_THRESHOLD",
+                    str(REFLEX_INT4_DEFAULT_3D_SEQ_THRESHOLD),
+                )
+            )
+        except ValueError:
+            reflex_threshold = REFLEX_INT4_DEFAULT_3D_SEQ_THRESHOLD
+        desired_threshold = max(desired_threshold, max(1, reflex_threshold))
+
+    if decode_cudagraph_enabled:
+        assert capture_sizes, "CUDA Graphs enabled but no capture sizes specified."
+        return min(capture_sizes, key=lambda x: abs(x - desired_threshold))
+    return desired_threshold
 
 
 @dataclass
@@ -157,20 +185,18 @@ class TritonAttentionMetadataBuilder(AttentionMetadataBuilder[TritonAttentionMet
         # must be at least equal to the threshold below.
         # If this threshold is not reached (i.e., the batch size is not large enough),
         # the 3D kernel will be selected instead.
-        self.seq_threshold_3D = MIN_LAUNCH_GRID_SIZE_2D // self.num_heads_kv
-
-        # Modify the threshold if needed.
-        if self.decode_cudagraph_enabled:
-            capture_sizes = self.vllm_config.compilation_config.cudagraph_capture_sizes
-            assert capture_sizes, "CUDA Graphs enabled but no capture sizes specified."
-
-            # Select the CUDA Graph capture size closest to self.seq_threshold_3D
-            # as threshold. This ensures that each captured graph covers the
-            # correct execution path.
-            self.seq_threshold_3D = min(
-                capture_sizes,
-                key=lambda x: abs(x - self.seq_threshold_3D),
-            )
+        base_seq_threshold_3D = MIN_LAUNCH_GRID_SIZE_2D // self.num_heads_kv
+        capture_sizes = (
+            self.vllm_config.compilation_config.cudagraph_capture_sizes
+            if self.decode_cudagraph_enabled
+            else None
+        )
+        self.seq_threshold_3D = _select_seq_threshold_3d(
+            base_threshold=base_seq_threshold_3D,
+            cache_dtype_str=getattr(kv_cache_spec, "cache_dtype_str", None),
+            decode_cudagraph_enabled=self.decode_cudagraph_enabled,
+            capture_sizes=capture_sizes,
+        )
 
         self.num_par_softmax_segments = NUM_PAR_SOFTMAX_SEGMENTS
         headdim_padded = next_power_of_2(self.headdim)

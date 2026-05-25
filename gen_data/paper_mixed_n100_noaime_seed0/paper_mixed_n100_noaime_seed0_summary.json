@@ -1,0 +1,75 @@
+{
+  "trace_csv": "data/burstgpt/data/BurstGPT_1.csv",
+  "manifest": "gen_data/paper_mixed_n100_noaime_seed0/paper_mixed_n100_noaime_seed0_manifest.jsonl",
+  "trace_profile": "gen_data/paper_mixed_n100_noaime_seed0/paper_mixed_n100_noaime_seed0_trace_profile.jsonl",
+  "summary": "gen_data/paper_mixed_n100_noaime_seed0/paper_mixed_n100_noaime_seed0_summary.json",
+  "total_requests": 100,
+  "seed": 0,
+  "time_scale": 0.05,
+  "group_mix": {
+    "gsm8k": 25,
+    "longbench": 25,
+    "math500": 25,
+    "ruler": 25
+  },
+  "trace": {
+    "selected_rows": 100,
+    "selected_failed_response_rows": 0,
+    "duration_sec": 5348.0,
+    "scaled_duration_sec": 267.40000000000003,
+    "long_input_tokens": 2048,
+    "long_output_tokens": 512,
+    "long_input_requests": 35,
+    "long_output_requests": 25
+  },
+  "datasets": {
+    "gov_report": {
+      "requests": 9,
+      "group": "longbench",
+      "task": "longbench",
+      "max_new_tokens": 512
+    },
+    "gsm8k": {
+      "requests": 25,
+      "group": "gsm8k",
+      "task": "reasoning",
+      "max_new_tokens": 1024
+    },
+    "math500": {
+      "requests": 25,
+      "group": "math500",
+      "task": "reasoning",
+      "max_new_tokens": 4096
+    },
+    "passage_retrieval_en": {
+      "requests": 8,
+      "group": "longbench",
+      "task": "longbench",
+      "max_new_tokens": 32
+    },
+    "qasper": {
+      "requests": 8,
+      "group": "longbench",
+      "task": "longbench",
+      "max_new_tokens": 128
+    },
+    "ruler_niah_single_1_16k": {
+      "requests": 8,
+      "group": "ruler",
+      "task": "ruler",
+      "max_new_tokens": 64
+    },
+    "ruler_niah_single_1_4k": {
+      "requests": 9,
+      "group": "ruler",
+      "task": "ruler",
+      "max_new_tokens": 64
+    },
+    "ruler_niah_single_1_8k": {
+      "requests": 8,
+      "group": "ruler",
+      "task": "ruler",
+      "max_new_tokens": 64
+    }
+  }
+}

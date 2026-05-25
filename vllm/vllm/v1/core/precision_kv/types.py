@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 
@@ -59,7 +60,7 @@ class Int4BlockPool:
     def __init__(self, num_blocks: int) -> None:
         if num_blocks < 0:
             raise ValueError(f"num_blocks must be non-negative, got {num_blocks}.")
-        self._free_blocks = list(range(num_blocks))
+        self._free_blocks: deque[int] = deque(range(num_blocks))
         self._allocated_blocks: set[int] = set()
         self.num_blocks = num_blocks
 
@@ -77,7 +78,7 @@ class Int4BlockPool:
     def allocate(self) -> int | None:
         if not self._free_blocks:
             return None
-        block_id = self._free_blocks.pop(0)
+        block_id = self._free_blocks.popleft()
         self._allocated_blocks.add(block_id)
         return block_id
 
@@ -98,7 +99,7 @@ class Int4BlockPool:
         if block_id not in self._allocated_blocks:
             raise ValueError(f"INT4 block {block_id} is not allocated.")
         self._allocated_blocks.remove(block_id)
-        self._free_blocks.insert(0, block_id)
+        self._free_blocks.appendleft(block_id)
 
 
 @dataclass(frozen=True)

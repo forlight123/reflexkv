@@ -4,6 +4,7 @@ import itertools
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import replace
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -16,6 +17,7 @@ from vllm.v1.core.kv_cache_utils import (
 from vllm.v1.core.precision_kv.demotion_planner import (
     DistanceDemotionPlanner,
     ReflexCandidateBreakdown,
+    ReflexDemotionPlan,
     RequestPrecisionBudget,
 )
 from vllm.v1.core.precision_kv.run_optimizer import DualPriceState
@@ -122,6 +124,11 @@ class SingleTypeKVCacheManager(ABC):
         )
         self._last_reflex_int4_candidate_capacity = 0
         self._last_reflex_int4_candidate_breakdown = ReflexCandidateBreakdown()
+        self._reflex_int4_cached_frontier_key: tuple | None = None
+        self._reflex_int4_cached_frontier_reuse_key: tuple | None = None
+        self._reflex_int4_cached_frontier_pages: tuple[ReflexPageMeta, ...] = ()
+        self._reflex_int4_cached_frontier_candidate_capacity = 0
+        self._reflex_int4_cached_frontier_breakdown = ReflexCandidateBreakdown()
 
         # {req_id: The number of cached blocks for this given request}
         # This is used to track the number of cached blocks for each request.
@@ -1139,6 +1146,312 @@ class SingleTypeKVCacheManager(ABC):
                     )
         return violations
 
+    @staticmethod
+    def _reflex_signature_mapping(mapping) -> tuple:
+        if not mapping:
+            return ()
+        items = []
+        for key, value in sorted(mapping.items(), key=lambda item: str(item[0])):
+            if isinstance(value, set | frozenset):
+                normalized = tuple(sorted(value))
+            elif isinstance(value, dict):
+                normalized = SingleTypeKVCacheManager._reflex_signature_mapping(value)
+            elif isinstance(value, (list, tuple)):
+                normalized = tuple(value)
+            else:
+                normalized = value
+            items.append((key, normalized))
+        return tuple(items)
+
+    @staticmethod
+    def _reflex_page_risk_signature(mapping) -> tuple:
+        if not mapping:
+            return ()
+        items = []
+        for request_id, risks in sorted(mapping.items(), key=lambda item: str(item[0])):
+            rounded = tuple(round(float(risk), 6) for risk in risks)
+            items.append((request_id, rounded))
+        return tuple(items)
+
+    @staticmethod
+    def _reflex_budget_signature(
+        budgets: dict[str, RequestPrecisionBudget] | None,
+    ) -> tuple:
+        if not budgets:
+            return ()
+        return tuple(
+            (
+                request_id,
+                budget.max_int4_pages,
+                budget.priority,
+                budget.max_int4_fraction,
+                budget.release_budget_blocks,
+                budget.max_demote_per_window,
+                budget.max_prompt_int4_pages,
+                budget.max_decode_int4_pages,
+                budget.quality_debt_budget_pages,
+            )
+            for request_id, budget in sorted(budgets.items())
+        )
+
+    @staticmethod
+    def _reflex_budget_reuse_signature(
+        budgets: dict[str, RequestPrecisionBudget] | None,
+    ) -> tuple:
+        if not budgets:
+            return ()
+        return tuple(
+            (
+                request_id,
+                budget.max_int4_pages,
+                round(float(budget.max_int4_fraction), 6),
+                budget.max_demote_per_window,
+                budget.max_prompt_int4_pages,
+                budget.max_decode_int4_pages,
+                budget.quality_debt_budget_pages,
+            )
+            for request_id, budget in sorted(budgets.items())
+        )
+
+    def _make_reflex_int4_frontier_cache_key(
+        self,
+        *,
+        cache_scope: str | None,
+        target_bf16_blocks: int,
+        keep_recent_pages: int,
+        keep_initial_pages: int,
+        max_int4_fraction_per_request: float,
+        low_risk_only: bool,
+        sparse_window_pages: int,
+        max_demote_per_window: int,
+        selection_policy: str,
+        dual_price_state: DualPriceState | None,
+        emergency_release: bool,
+        request_precision_budgets: dict[str, RequestPrecisionBudget] | None,
+        computed_tokens_by_request: dict[str, int] | None,
+        prompt_tokens_by_request: dict[str, int] | None,
+        protected_request_ids: set[str] | None,
+        allow_partial_prefill_demotion_request_ids: set[str] | None,
+        protected_prompt_pages_by_request: dict[str, int] | None,
+        protected_pages_by_request: dict[str, set[int]] | None,
+        sealed_pages_by_request: dict[str, int] | None,
+        remote_inflight_pages_by_request: dict[str, set[int]] | None,
+        prefill_page_risks_by_request: dict[str, Sequence[float]] | None,
+        compressible_pages_by_request: dict[str, set[int]] | None,
+        copy_on_demote_pages_by_request: dict[str, set[int]] | None,
+    ) -> tuple:
+        dual_signature = None
+        if dual_price_state is not None:
+            dual_signature = (
+                round(float(dual_price_state.memory_price), 6),
+                round(float(dual_price_state.admission_price), 6),
+                round(float(dual_price_state.quality_price), 6),
+                round(float(dual_price_state.migration_price), 6),
+                round(float(dual_price_state.slo_price), 6),
+            )
+        int4_free_blocks = (
+            self.reflex_int4_pool.num_free_blocks
+            if self.reflex_int4_pool is not None
+            else 0
+        )
+        return (
+            cache_scope,
+            target_bf16_blocks,
+            keep_recent_pages,
+            keep_initial_pages,
+            round(float(max_int4_fraction_per_request), 6),
+            bool(low_risk_only),
+            sparse_window_pages,
+            max_demote_per_window,
+            selection_policy,
+            dual_signature,
+            bool(emergency_release),
+            int4_free_blocks,
+            self._reflex_budget_signature(request_precision_budgets),
+            self._reflex_signature_mapping(computed_tokens_by_request),
+            self._reflex_signature_mapping(prompt_tokens_by_request),
+            tuple(sorted(protected_request_ids or ())),
+            tuple(sorted(allow_partial_prefill_demotion_request_ids or ())),
+            self._reflex_signature_mapping(protected_prompt_pages_by_request),
+            self._reflex_signature_mapping(protected_pages_by_request),
+            self._reflex_signature_mapping(sealed_pages_by_request),
+            self._reflex_signature_mapping(remote_inflight_pages_by_request),
+            self._reflex_page_risk_signature(prefill_page_risks_by_request),
+            self._reflex_signature_mapping(compressible_pages_by_request),
+            self._reflex_signature_mapping(copy_on_demote_pages_by_request),
+        )
+
+    def _make_reflex_int4_frontier_reuse_key(
+        self,
+        *,
+        cache_scope: str | None,
+        keep_recent_pages: int,
+        keep_initial_pages: int,
+        max_int4_fraction_per_request: float,
+        low_risk_only: bool,
+        sparse_window_pages: int,
+        max_demote_per_window: int,
+        selection_policy: str,
+        emergency_release: bool,
+        request_precision_budgets: dict[str, RequestPrecisionBudget] | None,
+        computed_tokens_by_request: dict[str, int] | None,
+        prompt_tokens_by_request: dict[str, int] | None,
+        protected_request_ids: set[str] | None,
+        allow_partial_prefill_demotion_request_ids: set[str] | None,
+        protected_prompt_pages_by_request: dict[str, int] | None,
+        protected_pages_by_request: dict[str, set[int]] | None,
+        sealed_pages_by_request: dict[str, int] | None,
+        remote_inflight_pages_by_request: dict[str, set[int]] | None,
+        prefill_page_risks_by_request: dict[str, Sequence[float]] | None,
+        compressible_pages_by_request: dict[str, set[int]] | None,
+        copy_on_demote_pages_by_request: dict[str, set[int]] | None,
+    ) -> tuple:
+        return (
+            cache_scope,
+            keep_recent_pages,
+            keep_initial_pages,
+            round(float(max_int4_fraction_per_request), 6),
+            bool(low_risk_only),
+            sparse_window_pages,
+            max_demote_per_window,
+            selection_policy,
+            bool(emergency_release),
+            self._reflex_budget_reuse_signature(request_precision_budgets),
+            self._reflex_signature_mapping(computed_tokens_by_request),
+            self._reflex_signature_mapping(prompt_tokens_by_request),
+            tuple(sorted(protected_request_ids or ())),
+            tuple(sorted(allow_partial_prefill_demotion_request_ids or ())),
+            self._reflex_signature_mapping(protected_prompt_pages_by_request),
+            self._reflex_signature_mapping(protected_pages_by_request),
+            self._reflex_signature_mapping(sealed_pages_by_request),
+            self._reflex_signature_mapping(remote_inflight_pages_by_request),
+            self._reflex_page_risk_signature(prefill_page_risks_by_request),
+            self._reflex_signature_mapping(compressible_pages_by_request),
+            self._reflex_signature_mapping(copy_on_demote_pages_by_request),
+        )
+
+    def _clear_reflex_int4_cached_frontier(self) -> None:
+        self._reflex_int4_cached_frontier_key = None
+        self._reflex_int4_cached_frontier_reuse_key = None
+        self._reflex_int4_cached_frontier_pages = ()
+        self._reflex_int4_cached_frontier_candidate_capacity = 0
+        self._reflex_int4_cached_frontier_breakdown = ReflexCandidateBreakdown()
+
+    def _store_reflex_int4_cached_frontier(
+        self,
+        *,
+        cache_key: tuple,
+        reuse_key: tuple,
+        plan: ReflexDemotionPlan,
+    ) -> None:
+        self._reflex_int4_cached_frontier_key = cache_key
+        self._reflex_int4_cached_frontier_reuse_key = reuse_key
+        self._reflex_int4_cached_frontier_pages = tuple(plan.candidate_pages)
+        self._reflex_int4_cached_frontier_candidate_capacity = (
+            plan.candidate_bf16_blocks
+        )
+        self._reflex_int4_cached_frontier_breakdown = plan.candidate_breakdown
+
+    def _cached_reflex_page_is_current(self, page: ReflexPageMeta) -> bool:
+        if page.request_id not in self.req_to_blocks:
+            return False
+        blocks = self.req_to_blocks[page.request_id]
+        if page.page_idx < 0 or page.page_idx >= len(blocks):
+            return False
+        self._ensure_reflex_block_ids(page.request_id)
+        encoded_ids = self.req_to_reflex_block_ids[page.request_id]
+        if page.page_idx >= len(encoded_ids):
+            return False
+        precision, physical_id = decode_block_table_entry(encoded_ids[page.page_idx])
+        if precision != PrecisionState.BF16 or physical_id != page.bf16_block_id:
+            return False
+        block = blocks[page.page_idx]
+        return block != self._null_block and block.block_id == page.bf16_block_id
+
+    def _plan_reflex_int4_demotions_from_cached_frontier(
+        self,
+        *,
+        cache_key: tuple,
+        reuse_key: tuple,
+        target_bf16_blocks: int,
+        prompt_tokens_by_request: dict[str, int] | None,
+    ) -> ReflexDemotionPlan | None:
+        if self.reflex_int4_pool is None:
+            return None
+        exact_match = cache_key == self._reflex_int4_cached_frontier_key
+        reuse_match = reuse_key == self._reflex_int4_cached_frontier_reuse_key
+        if not exact_match and not reuse_match:
+            return None
+        if (
+            not exact_match
+            and target_bf16_blocks
+            > self._reflex_int4_cached_frontier_candidate_capacity
+        ):
+            return None
+        cached_pages = self._reflex_int4_cached_frontier_pages
+        if not cached_pages:
+            return ReflexDemotionPlan(
+                [],
+                candidate_bf16_blocks=0,
+                candidate_breakdown=replace(
+                    self._reflex_int4_cached_frontier_breakdown,
+                    selected_actual=0,
+                ),
+            )
+
+        prompt_tokens_by_request = prompt_tokens_by_request or {}
+        prompt_pages_by_request = {
+            request_id: cdiv(prompt_tokens, self.block_size)
+            for request_id, prompt_tokens in prompt_tokens_by_request.items()
+        }
+        selected: list[ReflexDemotion] = []
+        for page in cached_pages:
+            if len(selected) >= target_bf16_blocks:
+                break
+            if not self._cached_reflex_page_is_current(page):
+                self._clear_reflex_int4_cached_frontier()
+                return None
+            int4_block_id = self.reflex_int4_pool.allocate()
+            if int4_block_id is None:
+                break
+            selected.append(
+                ReflexDemotion(
+                    request_id=page.request_id,
+                    page_idx=page.page_idx,
+                    bf16_block_id=page.bf16_block_id,
+                    int4_block_id=int4_block_id,
+                    encoded_block_table_id=encode_int4_block_id(int4_block_id),
+                    is_prompt_page=page.is_prompt_page,
+                    prompt_pages=prompt_pages_by_request.get(page.request_id),
+                    risk_score=page.prefill_risk,
+                    is_low_risk=page.compressible is True,
+                    copy_on_demote=page.copy_on_demote,
+                )
+            )
+
+        cached_breakdown = replace(
+            self._reflex_int4_cached_frontier_breakdown,
+            selected_actual=len(selected),
+        )
+        candidate_capacity = self._reflex_int4_cached_frontier_candidate_capacity
+        self._clear_reflex_int4_cached_frontier()
+        logger.info(
+            "ReFlexKV trace frontier_commit_cache outcome=hit "
+            "match=%s target_release=%d cached_pages=%d selected_actual=%d "
+            "candidate_release_capacity=%d.",
+            "exact" if exact_match else "reuse",
+            target_bf16_blocks,
+            len(cached_pages),
+            len(selected),
+            candidate_capacity,
+        )
+        return ReflexDemotionPlan(
+            selected,
+            candidate_bf16_blocks=candidate_capacity,
+            candidate_pages=tuple(cached_pages[: len(selected)]),
+            candidate_breakdown=cached_breakdown,
+        )
+
     def plan_reflex_int4_demotions(
         self,
         *,
@@ -1152,6 +1465,7 @@ class SingleTypeKVCacheManager(ABC):
         selection_policy: str = "relevance_sparse",
         dual_price_state: DualPriceState | None = None,
         emergency_release: bool = False,
+        cache_scope: str | None = None,
         request_precision_budgets: dict[str, RequestPrecisionBudget] | None = None,
         computed_tokens_by_request: dict[str, int] | None = None,
         prompt_tokens_by_request: dict[str, int] | None = None,
@@ -1173,7 +1487,19 @@ class SingleTypeKVCacheManager(ABC):
             self._last_reflex_int4_candidate_breakdown = ReflexCandidateBreakdown()
             return 0
 
-        request_pages = self._build_reflex_page_metadata(
+        cache_key = self._make_reflex_int4_frontier_cache_key(
+            cache_scope=cache_scope,
+            target_bf16_blocks=target_bf16_blocks,
+            keep_recent_pages=keep_recent_pages,
+            keep_initial_pages=keep_initial_pages,
+            max_int4_fraction_per_request=max_int4_fraction_per_request,
+            low_risk_only=low_risk_only,
+            sparse_window_pages=sparse_window_pages,
+            max_demote_per_window=max_demote_per_window,
+            selection_policy=selection_policy,
+            dual_price_state=dual_price_state,
+            emergency_release=emergency_release,
+            request_precision_budgets=request_precision_budgets,
             computed_tokens_by_request=computed_tokens_by_request,
             prompt_tokens_by_request=prompt_tokens_by_request,
             protected_request_ids=protected_request_ids,
@@ -1188,7 +1514,8 @@ class SingleTypeKVCacheManager(ABC):
             compressible_pages_by_request=compressible_pages_by_request,
             copy_on_demote_pages_by_request=copy_on_demote_pages_by_request,
         )
-        planner = DistanceDemotionPlanner(
+        reuse_key = self._make_reflex_int4_frontier_reuse_key(
+            cache_scope=cache_scope,
             keep_recent_pages=keep_recent_pages,
             keep_initial_pages=keep_initial_pages,
             max_int4_fraction_per_request=max_int4_fraction_per_request,
@@ -1196,19 +1523,73 @@ class SingleTypeKVCacheManager(ABC):
             sparse_window_pages=sparse_window_pages,
             max_demote_per_window=max_demote_per_window,
             selection_policy=selection_policy,
-            dual_price_state=dual_price_state,
             emergency_release=emergency_release,
-        )
-        plan = planner.plan(
-            request_pages,
-            target_bf16_blocks=target_bf16_blocks,
-            int4_pool=self.reflex_int4_pool,
             request_precision_budgets=request_precision_budgets,
-            dry_run=dry_run,
+            computed_tokens_by_request=computed_tokens_by_request,
+            prompt_tokens_by_request=prompt_tokens_by_request,
+            protected_request_ids=protected_request_ids,
+            allow_partial_prefill_demotion_request_ids=(
+                allow_partial_prefill_demotion_request_ids
+            ),
+            protected_prompt_pages_by_request=protected_prompt_pages_by_request,
+            protected_pages_by_request=protected_pages_by_request,
+            sealed_pages_by_request=sealed_pages_by_request,
+            remote_inflight_pages_by_request=remote_inflight_pages_by_request,
+            prefill_page_risks_by_request=prefill_page_risks_by_request,
+            compressible_pages_by_request=compressible_pages_by_request,
+            copy_on_demote_pages_by_request=copy_on_demote_pages_by_request,
         )
+        plan: ReflexDemotionPlan | None = None
+        if not dry_run:
+            plan = self._plan_reflex_int4_demotions_from_cached_frontier(
+                cache_key=cache_key,
+                reuse_key=reuse_key,
+                target_bf16_blocks=target_bf16_blocks,
+                prompt_tokens_by_request=prompt_tokens_by_request,
+            )
+
+        if plan is None:
+            request_pages = self._build_reflex_page_metadata(
+                computed_tokens_by_request=computed_tokens_by_request,
+                prompt_tokens_by_request=prompt_tokens_by_request,
+                protected_request_ids=protected_request_ids,
+                allow_partial_prefill_demotion_request_ids=(
+                    allow_partial_prefill_demotion_request_ids
+                ),
+                protected_prompt_pages_by_request=protected_prompt_pages_by_request,
+                protected_pages_by_request=protected_pages_by_request,
+                sealed_pages_by_request=sealed_pages_by_request,
+                remote_inflight_pages_by_request=remote_inflight_pages_by_request,
+                prefill_page_risks_by_request=prefill_page_risks_by_request,
+                compressible_pages_by_request=compressible_pages_by_request,
+                copy_on_demote_pages_by_request=copy_on_demote_pages_by_request,
+            )
+            planner = DistanceDemotionPlanner(
+                keep_recent_pages=keep_recent_pages,
+                keep_initial_pages=keep_initial_pages,
+                max_int4_fraction_per_request=max_int4_fraction_per_request,
+                low_risk_only=low_risk_only,
+                sparse_window_pages=sparse_window_pages,
+                max_demote_per_window=max_demote_per_window,
+                selection_policy=selection_policy,
+                dual_price_state=dual_price_state,
+                emergency_release=emergency_release,
+            )
+            plan = planner.plan(
+                request_pages,
+                target_bf16_blocks=target_bf16_blocks,
+                int4_pool=self.reflex_int4_pool,
+                request_precision_budgets=request_precision_budgets,
+                dry_run=dry_run,
+            )
         self._last_reflex_int4_candidate_capacity = plan.candidate_bf16_blocks
         self._last_reflex_int4_candidate_breakdown = plan.candidate_breakdown
         if dry_run:
+            self._store_reflex_int4_cached_frontier(
+                cache_key=cache_key,
+                reuse_key=reuse_key,
+                plan=plan,
+            )
             return plan.released_bf16_blocks
         recovery_shadow_pages_by_request = recovery_shadow_pages_by_request or {}
         recovery_shadow_pages_per_request = max(

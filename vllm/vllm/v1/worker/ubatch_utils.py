@@ -210,6 +210,13 @@ def _make_metadata_with_slice(
 
     block_table_tensor = attn_metadata.block_table_tensor[request_slice]
     slot_mapping = attn_metadata.slot_mapping[token_slice]
+    reflex_int4_block_counts_cpu = None
+    has_reflex_int4_blocks = attn_metadata.has_reflex_int4_blocks
+    if attn_metadata.reflex_int4_block_counts_cpu is not None:
+        reflex_int4_block_counts_cpu = attn_metadata.reflex_int4_block_counts_cpu[
+            request_slice
+        ]
+        has_reflex_int4_blocks = bool(np.any(reflex_int4_block_counts_cpu > 0))
 
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
@@ -221,7 +228,8 @@ def _make_metadata_with_slice(
         max_seq_len=max_seq_len,
         block_table_tensor=block_table_tensor,
         slot_mapping=slot_mapping,
-        has_reflex_int4_blocks=attn_metadata.has_reflex_int4_blocks,
+        has_reflex_int4_blocks=has_reflex_int4_blocks,
+        reflex_int4_block_counts_cpu=reflex_int4_block_counts_cpu,
         _seq_lens_cpu=seq_lens_cpu,
         _num_computed_tokens_cpu=num_computed_tokens_cpu,
     )

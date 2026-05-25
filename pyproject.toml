@@ -30,6 +30,13 @@ exclude = ["tests*", "vllm*"]
 dev = [
     "pytest==9.0.3",
 ]
+data = [
+    "nltk==3.9.4",
+    "pandas==3.0.3",
+    "pyarrow==24.0.0",
+    "tenacity==9.1.4",
+    "wonderwords==3.0.1",
+]
 vllm-cuda = [
     "aiohttp==3.13.5",
     "anthropic==0.96.0",

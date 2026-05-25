@@ -19,7 +19,11 @@ from vllm.v1.core.precision_kv.types import (
     ReflexDemotion,
 )
 from vllm.v1.core.sched import scheduler as scheduler_module
-from vllm.v1.core.sched.scheduler import Scheduler
+from vllm.v1.core.sched.scheduler import (
+    DEFAULT_REFLEX_BACKGROUND_PROMOTION_PAGES_PER_STEP,
+    DEFAULT_REFLEX_BF16_SHADOW_PAGES_PER_REQUEST,
+    Scheduler,
+)
 
 
 class _FakeBlockPool:
@@ -47,6 +51,7 @@ class _FakeReflexManager:
     def __init__(self, *, release_blocks: int, stale_raw_pages: int = 0):
         self.release_blocks = release_blocks
         self.targets = []
+        self.kwargs = []
         self._last_breakdown = ReflexCandidateBreakdown(
             raw_bf16_pages=stale_raw_pages,
             after_int4_pool_limit=stale_raw_pages,
@@ -54,6 +59,7 @@ class _FakeReflexManager:
 
     def plan_reflex_int4_demotions(self, *, target_bf16_blocks: int, **kwargs):
         self.targets.append(target_bf16_blocks)
+        self.kwargs.append(kwargs)
         if target_bf16_blocks <= 0:
             self._last_breakdown = ReflexCandidateBreakdown()
             return 0
@@ -616,6 +622,19 @@ def test_reflex_int4_coordinator_resets_unvisited_candidate_breakdown():
     assert breakdown.after_int4_pool_limit == 1
 
 
+def test_reflex_int4_coordinator_forwards_frontier_cache_scope():
+    coordinator = object.__new__(_FakeKVCacheCoordinator)
+    manager = _FakeReflexManager(release_blocks=1)
+    coordinator.single_type_managers = (manager,)
+
+    coordinator.plan_reflex_int4_demotions(
+        target_bf16_blocks=1,
+        cache_scope="admission_waiting",
+    )
+
+    assert manager.kwargs[0]["cache_scope"] == "admission_waiting"
+
+
 def test_reflex_int4_kv_cache_manager_forwards_dry_run_to_coordinator():
     manager = object.__new__(KVCacheManager)
     captured = {}
@@ -636,6 +655,27 @@ def test_reflex_int4_kv_cache_manager_forwards_dry_run_to_coordinator():
     assert released == 7
     assert captured["target_bf16_blocks"] == 11
     assert captured["dry_run"] is True
+
+
+def test_reflex_int4_kv_cache_manager_forwards_frontier_cache_scope():
+    manager = object.__new__(KVCacheManager)
+    captured = {}
+
+    def fake_plan(**kwargs):
+        captured.update(kwargs)
+        return 3
+
+    manager.coordinator = SimpleNamespace(
+        plan_reflex_int4_demotions=fake_plan,
+    )
+
+    released = manager.plan_reflex_int4_demotions(
+        target_bf16_blocks=5,
+        cache_scope="allocation_failure",
+    )
+
+    assert released == 3
+    assert captured["cache_scope"] == "allocation_failure"
 
 
 def test_reflex_int4_fast_target_uses_waiting_chunk_deficit():
@@ -1489,6 +1529,41 @@ def test_reflex_int4_background_demotion_only_step_runs_without_waiting():
 
     assert scheduler_output is not None
     assert requested_targets == [(16, False, "background_pressure")]
+    assert scheduler_output.reflex_int4_demotions is not None
+
+
+def test_reflex_int4_background_cache_full_uses_emergency_decode_release():
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=0)
+    scheduler.running = [SimpleNamespace(is_prefill_chunk=False)]
+    scheduler.waiting = False
+    scheduler.skipped_waiting = False
+    scheduler.finished_req_ids = set()
+    scheduler.encoder_cache_manager = SimpleNamespace(
+        get_freed_mm_hashes=lambda: []
+    )
+    scheduler.kv_cache_manager.take_reflex_int4_demotions = lambda: [
+        ReflexDemotion(
+            request_id="req-0",
+            page_idx=0,
+            bf16_block_id=0,
+            int4_block_id=0,
+            encoded_block_table_id=-1,
+            kv_cache_group_id=0,
+        )
+    ]
+    requested_targets = []
+
+    def fake_try_demote(*, target_bf16_blocks, force=False, reason="pressure"):
+        requested_targets.append((target_bf16_blocks, force, reason))
+        return target_bf16_blocks
+
+    scheduler._try_reflex_int4_demote = fake_try_demote
+    scheduler._update_after_schedule = lambda scheduler_output: None
+
+    scheduler_output = scheduler._try_reflex_int4_demotion_only_step()
+
+    assert scheduler_output is not None
+    assert requested_targets == [(8, True, "decode_cache_full")]
     assert scheduler_output.reflex_int4_demotions is not None
 
 
@@ -2553,6 +2628,46 @@ def test_reflex_int4_feasible_release_uses_cached_frontier_summary():
     assert scheduler._reflex_int4_last_candidate_breakdown is breakdown
 
 
+def test_reflex_int4_feasible_release_caps_reused_larger_frontier_to_target():
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=0)
+    scheduler._reflex_int4_scheduler_step = 20
+    scheduler._reflex_int4_frontier_cache = FeasibleFrontierCache(
+        max_age_steps=4
+    )
+    breakdown = ReflexCandidateBreakdown(
+        raw_bf16_pages=16,
+        eligible_full_unshared_pages=16,
+        after_initial_recent_protection=16,
+        after_low_risk_filter=16,
+        after_request_budget_cap=16,
+        after_sparse_window_quota=16,
+        after_int4_pool_limit=12,
+        selected_actual=12,
+    )
+    summary = FeasibleFrontierSummary.from_candidate_breakdown(
+        scheduler_step=19,
+        reason="admission_waiting",
+        target_release=16,
+        feasible_release=12,
+        candidate_breakdown=breakdown,
+    )
+    scheduler._reflex_int4_frontier_cache.update(summary)
+
+    def fail_plan(**kwargs):
+        raise AssertionError("compatible frontier cache should avoid dry-run plan")
+
+    scheduler.kv_cache_manager.plan_reflex_int4_demotions = fail_plan
+
+    feasible_release = scheduler._estimate_reflex_int4_feasible_release(
+        target_bf16_blocks=8,
+        reason="admission_waiting",
+    )
+
+    assert feasible_release == 8
+    assert scheduler._reflex_int4_last_demote_candidate_capacity == 12
+    assert scheduler._reflex_int4_last_candidate_breakdown is breakdown
+
+
 def test_reflex_int4_admission_ticket_defers_waiting_retry_until_due_step():
     scheduler = _make_scheduler_for_reflex_target(free_blocks=0)
     scheduler._reflex_int4_scheduler_step = 30
@@ -2968,6 +3083,59 @@ def test_reflex_int4_frontier_dual_uses_emergency_release_for_allocation_failure
     assert captured["dual_price_state"].admission_price > 0.5
 
 
+def test_reflex_int4_frontier_dual_uses_emergency_release_for_decode_cache_full():
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=0)
+    scheduler.requests = {}
+    scheduler.waiting = False
+    scheduler.skipped_waiting = False
+    scheduler._reflex_int4_scheduler_step = 10
+    scheduler._reflex_int4_last_demote_step = 0
+    scheduler._reflex_int4_page_selection_policy = "frontier_dual"
+    captured = {}
+
+    def fake_plan(**kwargs):
+        captured.update(kwargs)
+        return 4
+
+    scheduler.kv_cache_manager.plan_reflex_int4_demotions = fake_plan
+
+    released = scheduler._try_reflex_int4_demote(
+        target_bf16_blocks=4,
+        force=True,
+        reason="decode_cache_full",
+    )
+
+    assert released == 4
+    assert captured["selection_policy"] == "frontier_dual"
+    assert captured["emergency_release"] is True
+
+
+def test_reflex_int4_force_demote_bypasses_background_noop_cooldown():
+    scheduler = _make_scheduler_for_reflex_target(free_blocks=0)
+    scheduler.requests = {}
+    scheduler.waiting = False
+    scheduler.skipped_waiting = False
+    scheduler._reflex_int4_scheduler_step = 42
+    scheduler._reflex_int4_last_demote_step = 42
+    scheduler._reflex_int4_page_selection_policy = "frontier_dual"
+    captured = {}
+
+    def fake_plan(**kwargs):
+        captured.update(kwargs)
+        return 4
+
+    scheduler.kv_cache_manager.plan_reflex_int4_demotions = fake_plan
+
+    released = scheduler._try_reflex_int4_demote(
+        target_bf16_blocks=4,
+        force=True,
+        reason="decode_cache_full",
+    )
+
+    assert released == 4
+    assert captured["emergency_release"] is True
+
+
 def test_reflex_int4_demote_builds_request_aware_precision_budgets():
     scheduler = _make_scheduler_for_reflex_target(free_blocks=192)
     scheduler._reflex_int4_scheduler_step = 10
@@ -3157,6 +3325,11 @@ def test_reflex_int4_scheduler_has_only_budgeted_background_promotion():
     assert not hasattr(scheduler, "_apply_reflex_page_attention_mass_output")
 
 
+def test_reflex_int4_recovery_defaults_keep_quality_guardrails():
+    assert DEFAULT_REFLEX_BF16_SHADOW_PAGES_PER_REQUEST == 1
+    assert DEFAULT_REFLEX_BACKGROUND_PROMOTION_PAGES_PER_STEP == 1
+
+
 def test_reflex_int4_background_promotion_runs_under_low_pressure():
     scheduler = _make_scheduler_for_reflex_target(
         free_blocks=3500,
@@ -3210,6 +3383,25 @@ def test_reflex_int4_background_promotion_skips_when_waiting_pressure_exists():
 
     def fail_promote(**kwargs):
         raise AssertionError("background promotion should not run under pressure")
+
+    scheduler.kv_cache_manager.promote_reflex_recoverable_pages = fail_promote
+
+    assert scheduler._try_reflex_int4_background_promote() == 0
+
+
+def test_reflex_int4_background_promotion_skips_when_budget_is_zero():
+    scheduler = _make_scheduler_for_reflex_target(
+        free_blocks=3500,
+        total_blocks=4096,
+    )
+    scheduler._reflex_int4_background_promotion_free_ratio = 0.60
+    scheduler._reflex_int4_background_promotion_pages_per_step = 0
+    scheduler.waiting = []
+    scheduler.skipped_waiting = []
+    scheduler.requests = {"req-a": SimpleNamespace(request_id="req-a")}
+
+    def fail_promote(**kwargs):
+        raise AssertionError("background promotion should be disabled")
 
     scheduler.kv_cache_manager.promote_reflex_recoverable_pages = fail_promote
 

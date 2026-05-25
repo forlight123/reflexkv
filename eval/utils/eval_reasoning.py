@@ -163,6 +163,37 @@ def is_boxed_answer_correct(pred_str: str, gold_str: str) -> bool:
     return pred_num == gold_num
 
 
+def _normalize_ruler_text(text: str) -> str:
+    return " ".join(str(text).lower().split())
+
+
+def is_ruler_string_match_correct(pred_str: str, answers) -> bool:
+    normalized_pred = _normalize_ruler_text(pred_str)
+    normalized_answers = [
+        _normalize_ruler_text(answer)
+        for answer in _normalize_answers(answers)
+        if str(answer).strip()
+    ]
+    if not normalized_answers:
+        return False
+    return all(answer in normalized_pred for answer in normalized_answers)
+
+
+def _score_prediction(metric_name: str, pred_str: str, answers) -> tuple[bool, str, str]:
+    if metric_name == "ruler_string_match":
+        passed = is_ruler_string_match_correct(pred_str, answers)
+        return (
+            passed,
+            _normalize_ruler_text(pred_str),
+            "; ".join(_normalize_answers(answers)),
+        )
+
+    passed = any(is_boxed_answer_correct(pred_str, answer) for answer in answers)
+    extracted = _normalize_prediction(pred_str)
+    gold_clean = clean_latex_answer(_normalize_answers(answers)[0] if answers else "")
+    return passed, extracted, gold_clean
+
+
 def _load_predictions(file_path: str):
     rows = []
     with open(file_path, "r", encoding="utf-8") as handle:
@@ -189,13 +220,15 @@ def evaluate_file(file_path: str, dataset_name: str, config_dir: str) -> float:
         answers = _normalize_answers(row.get("answers", []))
         meta = row.get("meta", {})
 
-        pred_clean = _normalize_prediction(pred_str)
-        passed = any(is_boxed_answer_correct(pred_str, answer) for answer in answers)
+        passed, pred_clean, gold_clean = _score_prediction(
+            metric_name,
+            pred_str,
+            answers,
+        )
         score = 1.0 if passed else 0.0
         scores.append(score)
 
         if not passed:
-            gold_clean = clean_latex_answer(answers[0] if answers else "")
             badcases.append(
                 {
                     "meta": meta,

@@ -107,6 +107,9 @@ from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
 
+DEFAULT_REFLEX_BF16_SHADOW_PAGES_PER_REQUEST = 1
+DEFAULT_REFLEX_BACKGROUND_PROMOTION_PAGES_PER_STEP = 1
+
 
 class Scheduler(SchedulerInterface):
     def __init__(
@@ -602,7 +605,7 @@ class Scheduler(SchedulerInterface):
         self._reflex_int4_recovery_shadow_pages_per_request = (
             self._read_reflex_nonnegative_int_env(
                 "SEMANTIQ_REFLEX_BF16_SHADOW_PAGES_PER_REQUEST",
-                1,
+                DEFAULT_REFLEX_BF16_SHADOW_PAGES_PER_REQUEST,
             )
         )
         self._reflex_int4_background_promotion_free_ratio = self._read_reflex_float_env(
@@ -614,7 +617,7 @@ class Scheduler(SchedulerInterface):
         self._reflex_int4_background_promotion_pages_per_step = (
             self._read_reflex_nonnegative_int_env(
                 "SEMANTIQ_REFLEX_BACKGROUND_PROMOTION_PAGES_PER_STEP",
-                1,
+                DEFAULT_REFLEX_BACKGROUND_PROMOTION_PAGES_PER_STEP,
             )
         )
         self._reflex_int4_promotion_min_remaining_decode_tokens = (
@@ -1382,6 +1385,7 @@ class Scheduler(SchedulerInterface):
                     # If loading async, allocate memory and put request
                     # into the WAITING_FOR_REMOTE_KV state.
                     request.status = RequestStatus.WAITING_FOR_REMOTE_KVS
+                    request.reflex_remote_transfer_start_time = time.perf_counter()
                     step_skipped_waiting.prepend_request(request)
                     # Set num_computed_tokens even though KVs are not yet loaded.
                     # request.num_computed_tokens will not be used anywhere until
@@ -3152,7 +3156,7 @@ class Scheduler(SchedulerInterface):
         shadow_pages_per_request = getattr(
             self,
             "_reflex_int4_recovery_shadow_pages_per_request",
-            1,
+            0,
         )
         recovery_shadow_pages_by_request = {
             request_id: select_bf16_shadow_pages(
@@ -3279,7 +3283,11 @@ class Scheduler(SchedulerInterface):
             > getattr(self, "_reflex_int4_admission_reserve_blocks", 0)
         )
         emergency_release = selection_policy == "frontier_dual" and (
-            reason in {"allocation_failure", "full_sequence_reserve"}
+            reason in {
+                "allocation_failure",
+                "decode_cache_full",
+                "full_sequence_reserve",
+            }
             or admission_waiting_emergency
         )
         return {
@@ -3295,6 +3303,7 @@ class Scheduler(SchedulerInterface):
             "selection_policy": selection_policy,
             "dual_price_state": dual_price_state,
             "emergency_release": emergency_release,
+            "cache_scope": reason,
             "request_precision_budgets": (
                 self._build_reflex_int4_request_precision_budgets(
                     reason=reason,
@@ -3350,6 +3359,10 @@ class Scheduler(SchedulerInterface):
             current_step=getattr(self, "_reflex_int4_scheduler_step", 0),
         )
         if cached_summary is not None:
+            cached_feasible_release = min(
+                target_bf16_blocks,
+                cached_summary.candidate_release_capacity,
+            )
             self._reflex_int4_last_demote_candidate_capacity = (
                 cached_summary.candidate_release_capacity
             )
@@ -3363,7 +3376,7 @@ class Scheduler(SchedulerInterface):
                 "levels=%s blocked=%s.",
                 reason,
                 target_bf16_blocks,
-                cached_summary.feasible_release,
+                cached_feasible_release,
                 cached_summary.candidate_release_capacity,
                 cached_summary.cached_frontier_age(
                     current_step=getattr(
@@ -3375,7 +3388,7 @@ class Scheduler(SchedulerInterface):
                 cached_summary.format_levels(),
                 cached_summary.format_rejection_reasons(),
             )
-            return cached_summary.feasible_release
+            return cached_feasible_release
 
         plan_kwargs = self._build_reflex_int4_demotion_planning_kwargs(
             target_bf16_blocks=target_bf16_blocks,
@@ -3497,10 +3510,30 @@ class Scheduler(SchedulerInterface):
                 1,
                 force_allocate_failure=False,
             )
+            force_decode_release = (
+                self.kv_cache_manager.block_pool.get_num_free_blocks() <= 0
+            )
+            if force_decode_release and target_blocks > 0:
+                min_background_batch = max(
+                    1,
+                    getattr(
+                        self,
+                        "_reflex_int4_background_min_demotions_per_step",
+                        1,
+                    ),
+                )
+                target_blocks = min(
+                    max(target_blocks, min_background_batch),
+                    self._reflex_int4_background_demotions_per_step,
+                )
             actual_release_blocks = self._try_reflex_int4_demote(
                 target_bf16_blocks=target_blocks,
-                force=False,
-                reason="background_pressure",
+                force=force_decode_release,
+                reason=(
+                    "decode_cache_full"
+                    if force_decode_release
+                    else "background_pressure"
+                ),
             )
             if actual_release_blocks <= 0:
                 return None
@@ -4407,6 +4440,13 @@ class Scheduler(SchedulerInterface):
             return 0
         if not hasattr(self.kv_cache_manager, "promote_reflex_recoverable_pages"):
             return 0
+        max_promotion_pages = getattr(
+            self,
+            "_reflex_int4_background_promotion_pages_per_step",
+            0,
+        )
+        if max_promotion_pages <= 0:
+            return 0
         if getattr(self, "waiting", None) or getattr(self, "skipped_waiting", None):
             return 0
         free_ratio = self._reflex_int4_free_ratio()
@@ -4429,11 +4469,7 @@ class Scheduler(SchedulerInterface):
             for request_id, request in requests.items()
         }
         promoted = self.kv_cache_manager.promote_reflex_recoverable_pages(
-            max_pages=getattr(
-                self,
-                "_reflex_int4_background_promotion_pages_per_step",
-                1,
-            ),
+            max_pages=max_promotion_pages,
             prefill_page_risks_by_request=prefill_page_risks_by_request,
             remaining_decode_tokens_by_request=remaining_decode_tokens_by_request,
             min_remaining_decode_tokens=getattr(
@@ -4463,7 +4499,9 @@ class Scheduler(SchedulerInterface):
         if target_bf16_blocks <= 0:
             return 0
         if (
-            self._reflex_int4_scheduler_step - self._reflex_int4_last_demote_step
+            not force
+            and self._reflex_int4_scheduler_step
+            - self._reflex_int4_last_demote_step
             < self._reflex_int4_demote_cooldown_steps
         ):
             return 0
@@ -4501,6 +4539,7 @@ class Scheduler(SchedulerInterface):
                 feasible_release=planned_blocks,
                 candidate_breakdown=breakdown,
             )
+            self._get_reflex_int4_frontier_cache().update(summary)
             after_frontier_optimizer = getattr(
                 breakdown,
                 "after_frontier_optimizer",
@@ -4570,6 +4609,14 @@ class Scheduler(SchedulerInterface):
             )
         elif reason == "background_pressure" and not force:
             self._reflex_int4_last_demote_step = self._reflex_int4_scheduler_step
+        logger.info(
+            "ReFlexKV trace stage_profile request=all phase=planner "
+            "ms=%.3f reason=%s target_release=%d actual_release=%d.",
+            plan_ms,
+            reason,
+            target_bf16_blocks,
+            planned_blocks,
+        )
         return planned_blocks
 
     def _build_kv_connector_meta(
@@ -5710,6 +5757,23 @@ class Scheduler(SchedulerInterface):
             # Count the number of prefix cached tokens.
             if request.num_cached_tokens < 0:
                 request.num_cached_tokens = request.num_computed_tokens
+
+        remote_transfer_start = getattr(
+            request,
+            "reflex_remote_transfer_start_time",
+            None,
+        )
+        if remote_transfer_start is not None:
+            logger.info(
+                "ReFlexKV trace stage_profile request=%s phase=remote_transfer "
+                "ms=%.3f source=scheduler.",
+                request.request_id,
+                (time.perf_counter() - float(remote_transfer_start)) * 1000.0,
+            )
+            try:
+                delattr(request, "reflex_remote_transfer_start_time")
+            except AttributeError:
+                pass
 
         self.finished_recving_kv_req_ids.remove(request.request_id)
 

@@ -26,6 +26,8 @@ class AblationCase:
     env: dict[str, str] = field(default_factory=dict)
     disable_prefill_page_metadata: bool = False
     proxy_prefill_max_inflight: int | None = None
+    proxy_decode_backpressure_policy: str | None = None
+    proxy_decode_backpressure_waiting_policy: str | None = None
 
 
 CASE_PRESETS: dict[str, AblationCase] = {
@@ -38,31 +40,42 @@ CASE_PRESETS: dict[str, AblationCase] = {
             "SEMANTIQ_REFLEX_PREFILL_PAGE_METADATA": "0",
         },
         disable_prefill_page_metadata=True,
-        proxy_prefill_max_inflight=1,
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_waiting_policy="fixed",
     ),
     "heuristic_reflex": AblationCase(
         name="heuristic_reflex",
         page_selection_policy="relevance_sparse",
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_waiting_policy="adaptive",
     ),
     "frontier_dual_reflex": AblationCase(
         name="frontier_dual_reflex",
         page_selection_policy="frontier_dual",
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_waiting_policy="adaptive",
     ),
     "direct_landing_off": AblationCase(
         name="direct_landing_off",
         page_selection_policy="frontier_dual",
         env={"SEMANTIQ_REFLEX_ENABLE_DIRECT_INT4_LANDING": "0"},
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_waiting_policy="adaptive",
     ),
     "direct_landing_on": AblationCase(
         name="direct_landing_on",
         page_selection_policy="frontier_dual",
         env={"SEMANTIQ_REFLEX_ENABLE_DIRECT_INT4_LANDING": "1"},
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_waiting_policy="adaptive",
     ),
     "p_side_risk_off": AblationCase(
         name="p_side_risk_off",
         page_selection_policy="frontier_dual",
         env={"SEMANTIQ_REFLEX_PREFILL_PAGE_METADATA": "0"},
         disable_prefill_page_metadata=True,
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_waiting_policy="adaptive",
     ),
 }
 
@@ -169,6 +182,32 @@ def build_command(
         ),
         "--proxy-prefill-metadata-wait-timeout-sec",
         str(_metadata_wait_timeout(args, case)),
+        "--proxy-decode-backpressure-policy",
+        str(
+            case.proxy_decode_backpressure_policy
+            if case.proxy_decode_backpressure_policy is not None
+            else args.proxy_decode_backpressure_policy
+        ),
+        "--proxy-decode-backpressure-max-kv-usage",
+        str(args.proxy_decode_backpressure_max_kv_usage),
+        "--proxy-decode-backpressure-max-waiting",
+        str(args.proxy_decode_backpressure_max_waiting),
+        "--proxy-decode-backpressure-waiting-policy",
+        str(
+            case.proxy_decode_backpressure_waiting_policy
+            if case.proxy_decode_backpressure_waiting_policy is not None
+            else args.proxy_decode_backpressure_waiting_policy
+        ),
+        "--proxy-decode-backpressure-adaptive-max-waiting",
+        str(args.proxy_decode_backpressure_adaptive_max_waiting),
+        "--proxy-decode-backpressure-adaptive-kv-headroom-per-waiting",
+        str(args.proxy_decode_backpressure_adaptive_kv_headroom_per_waiting),
+        "--proxy-decode-backpressure-poll-interval-sec",
+        str(args.proxy_decode_backpressure_poll_interval_sec),
+        "--proxy-decode-backpressure-timeout-sec",
+        str(args.proxy_decode_backpressure_timeout_sec),
+        "--proxy-decode-backpressure-admission-settle-sec",
+        str(args.proxy_decode_backpressure_admission_settle_sec),
         "--reflex-remote-chunk-tokens",
         str(args.reflex_remote_chunk_tokens),
         "--reflex-page-selection-policy",
@@ -281,11 +320,56 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument("--max-num-batched-tokens", type=int, default=8192)
     parser.add_argument("--num-gpu-blocks-override", type=int, default=None)
-    parser.add_argument("--proxy-prefill-max-inflight", type=int, default=4)
+    parser.add_argument("--proxy-prefill-max-inflight", type=int, default=0)
     parser.add_argument(
         "--proxy-prefill-metadata-wait-timeout-sec",
         type=float,
         default=None,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-policy",
+        choices=["off", "metrics"],
+        default="metrics",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-max-kv-usage",
+        type=float,
+        default=0.90,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-max-waiting",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-waiting-policy",
+        choices=["fixed", "adaptive"],
+        default="fixed",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-adaptive-max-waiting",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-adaptive-kv-headroom-per-waiting",
+        type=float,
+        default=0.04,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-poll-interval-sec",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-timeout-sec",
+        type=float,
+        default=300.0,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-admission-settle-sec",
+        type=float,
+        default=1.0,
     )
     parser.add_argument("--reflex-remote-chunk-tokens", type=int, default=512)
     parser.add_argument("--max-concurrency", type=int, default=8)

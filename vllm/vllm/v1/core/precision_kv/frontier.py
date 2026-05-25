@@ -293,12 +293,33 @@ class FeasibleFrontierCache:
         target_release: int,
         current_step: int,
     ) -> FeasibleFrontierSummary | None:
-        summary = self._summaries.get((reason, target_release))
-        if summary is None:
+        target_release = max(0, int(target_release))
+        exact_summary = self._summaries.get((reason, target_release))
+        if exact_summary is not None and self._is_fresh(
+            exact_summary,
+            current_step=current_step,
+        ):
+            return exact_summary
+
+        compatible: list[FeasibleFrontierSummary] = []
+        for (summary_reason, summary_target), summary in self._summaries.items():
+            if summary_reason != reason or summary_target < target_release:
+                continue
+            if self._is_fresh(summary, current_step=current_step):
+                compatible.append(summary)
+        if not compatible:
             return None
-        if summary.cached_frontier_age(current_step=current_step) > self.max_age_steps:
-            return None
-        return summary
+        return min(compatible, key=lambda item: item.target_release)
+
+    def _is_fresh(
+        self,
+        summary: FeasibleFrontierSummary,
+        *,
+        current_step: int,
+    ) -> bool:
+        return summary.cached_frontier_age(
+            current_step=current_step,
+        ) <= self.max_age_steps
 
     def latest(self) -> FeasibleFrontierSummary | None:
         return self._latest_summary

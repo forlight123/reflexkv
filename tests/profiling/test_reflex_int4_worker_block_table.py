@@ -88,6 +88,44 @@ class ReflexInt4WorkerBlockTableTest(unittest.TestCase):
 
         self.assertEqual(block_table[0].block_table.np[0, 1], 9)
 
+    def test_worker_block_table_tracks_int4_counts_incrementally(self):
+        block_table = MultiGroupBlockTable(
+            max_num_reqs=3,
+            max_model_len=16,
+            max_num_batched_tokens=8,
+            pin_memory=False,
+            device=torch.device("cpu"),
+            block_sizes=[2],
+            kernel_block_sizes=[2],
+        )
+        block_table.add_row(([5, -2, 7],), row_idx=0)
+        block_table.add_row(([-1, -3],), row_idx=1)
+
+        self.assertEqual(block_table[0].num_reflex_int4_blocks_per_row[0], 1)
+        self.assertEqual(block_table[0].num_reflex_int4_blocks_per_row[1], 2)
+
+        block_table.update_block_id(
+            kv_cache_group_id=0,
+            row_idx=0,
+            page_idx=2,
+            block_id=-4,
+        )
+        block_table.update_block_id(
+            kv_cache_group_id=0,
+            row_idx=1,
+            page_idx=0,
+            block_id=11,
+        )
+
+        self.assertEqual(block_table[0].num_reflex_int4_blocks_per_row[0], 2)
+        self.assertEqual(block_table[0].num_reflex_int4_blocks_per_row[1], 1)
+
+        block_table.move_row(0, 2)
+        self.assertEqual(block_table[0].num_reflex_int4_blocks_per_row[2], 2)
+
+        block_table.clear_row(2)
+        self.assertEqual(block_table[0].num_reflex_int4_blocks_per_row[2], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

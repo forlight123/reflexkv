@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import itertools
 import os
+import time
 import urllib
 import uuid
 from contextlib import asynccontextmanager
@@ -14,6 +15,28 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
+
+_decode_admission_locks: dict[str, asyncio.Lock] = {}
+_decode_admission_pending: dict[str, int] = {}
+
+
+def _emit_reflex_stage_profile(
+    request_id: str,
+    *,
+    phase: str,
+    ms: float,
+    **fields: Any,
+) -> None:
+    extras = " ".join(
+        f"{key}={str(value).replace(' ', '_')}"
+        for key, value in fields.items()
+        if value is not None
+    )
+    suffix = f" {extras}" if extras else ""
+    print(
+        "ReFlexKV trace stage_profile "
+        f"request={request_id} phase={phase} ms={ms:.3f}{suffix}."
+    )
 
 
 def maybe_wrap_ipv6_address(address: str) -> str:
@@ -176,8 +199,8 @@ def parse_args():
         type=int,
         default=0,
         help=(
-            "Maximum end-to-end requests that may hold producer-side prefill "
-            "KV at once. Use 0 to disable proxy-side prefill backpressure."
+            "Maximum producer-side prefill tasks the proxy lets run "
+            "concurrently. Use 0 to let decode admission/backpressure decide."
         ),
     )
     parser.add_argument(
@@ -196,6 +219,102 @@ def parse_args():
             "Maximum time to wait for the prefill response before starting "
             "decode, so returned ReFlexKV metadata can be attached to the "
             "decode request. Use 0 to preserve fully overlapped prefill/decode."
+        ),
+    )
+    parser.add_argument(
+        "--decode-backpressure-policy",
+        choices=["off", "metrics"],
+        default=os.environ.get("SEMANTIQ_PROXY_DECODE_BACKPRESSURE_POLICY", "off"),
+        help=(
+            "Proxy-side decode capacity gate. 'metrics' polls each decode "
+            "server's /metrics before starting a new remote prefill."
+        ),
+    )
+    parser.add_argument(
+        "--decode-backpressure-max-kv-usage",
+        type=float,
+        default=float(
+            os.environ.get("SEMANTIQ_PROXY_DECODE_BACKPRESSURE_MAX_KV_USAGE", "0.90")
+        ),
+        help="Maximum decode KV cache usage ratio allowed before prefill admission.",
+    )
+    parser.add_argument(
+        "--decode-backpressure-max-waiting",
+        type=int,
+        default=int(os.environ.get("SEMANTIQ_PROXY_DECODE_BACKPRESSURE_MAX_WAITING", "0")),
+        help=(
+            "Maximum decode waiting requests allowed before proxy prefill "
+            "admission waits. Use a negative value to ignore waiting requests."
+        ),
+    )
+    parser.add_argument(
+        "--decode-backpressure-waiting-policy",
+        choices=["fixed", "adaptive"],
+        default=os.environ.get(
+            "SEMANTIQ_PROXY_DECODE_BACKPRESSURE_WAITING_POLICY",
+            "fixed",
+        ),
+        help=(
+            "Waiting gate policy. 'adaptive' lets reflex_int4 decode admit "
+            "extra waiting requests when KV headroom is available."
+        ),
+    )
+    parser.add_argument(
+        "--decode-backpressure-adaptive-max-waiting",
+        type=int,
+        default=int(
+            os.environ.get(
+                "SEMANTIQ_PROXY_DECODE_BACKPRESSURE_ADAPTIVE_MAX_WAITING",
+                "4",
+            )
+        ),
+        help="Maximum extra waiting requests allowed by adaptive waiting.",
+    )
+    parser.add_argument(
+        "--decode-backpressure-adaptive-kv-headroom-per-waiting",
+        type=float,
+        default=float(
+            os.environ.get(
+                "SEMANTIQ_PROXY_DECODE_BACKPRESSURE_ADAPTIVE_KV_HEADROOM_PER_WAITING",
+                "0.04",
+            )
+        ),
+        help="KV usage headroom consumed per adaptive waiting slot.",
+    )
+    parser.add_argument(
+        "--decode-backpressure-poll-interval-sec",
+        type=float,
+        default=float(
+            os.environ.get(
+                "SEMANTIQ_PROXY_DECODE_BACKPRESSURE_POLL_INTERVAL_SEC", "0.05"
+            )
+        ),
+        help="Polling interval while decode backpressure is active.",
+    )
+    parser.add_argument(
+        "--decode-backpressure-timeout-sec",
+        type=float,
+        default=float(
+            os.environ.get("SEMANTIQ_PROXY_DECODE_BACKPRESSURE_TIMEOUT_SEC", "300")
+        ),
+        help=(
+            "Maximum time to wait for decode capacity before failing open. "
+            "Use 0 to wait indefinitely."
+        ),
+    )
+    parser.add_argument(
+        "--decode-backpressure-admission-settle-sec",
+        type=float,
+        default=float(
+            os.environ.get(
+                "SEMANTIQ_PROXY_DECODE_BACKPRESSURE_ADMISSION_SETTLE_SEC", "1.0"
+            )
+        ),
+        help=(
+            "How long a locally admitted decode request should count against "
+            "proxy-side admission before decode /metrics is expected to show "
+            "it. This avoids holding the local admission slot until a "
+            "non-streaming completion finishes."
         ),
     )
 
@@ -364,6 +483,311 @@ def _release_prefill_slot(app: FastAPI, acquired: bool) -> None:
         semaphore.release()
 
 
+def _release_prefill_slot_when_prefill_done(
+    app: FastAPI,
+    acquired: bool,
+    prefill_task: asyncio.Task,
+    request_id: str,
+) -> bool:
+    if not acquired:
+        return False
+
+    def _release_on_done(_task: asyncio.Task) -> None:
+        _release_prefill_slot(app, True)
+
+    prefill_task.add_done_callback(_release_on_done)
+    return True
+
+
+def _parse_prometheus_metrics(text: str) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.rsplit(None, 1)
+        if len(parts) != 2:
+            continue
+        key, value = parts
+        try:
+            metrics[key] = float(value)
+        except ValueError:
+            continue
+    return metrics
+
+
+def _metric_values(metrics: dict[str, float], prefix: str) -> list[float]:
+    return [
+        value
+        for key, value in metrics.items()
+        if key == prefix or key.startswith(prefix + "{")
+    ]
+
+
+def _max_metric(metrics: dict[str, float], prefix: str) -> float | None:
+    values = _metric_values(metrics, prefix)
+    return max(values) if values else None
+
+
+def _decode_backpressure_policy() -> str:
+    args = globals().get("global_args")
+    if args is None:
+        return "off"
+    return str(getattr(args, "decode_backpressure_policy", "off") or "off")
+
+
+def _decode_backpressure_waiting_policy() -> str:
+    args = globals().get("global_args")
+    if args is None:
+        return "fixed"
+    return str(getattr(args, "decode_backpressure_waiting_policy", "fixed") or "fixed")
+
+
+def _decode_backpressure_float(name: str, default: float) -> float:
+    args = globals().get("global_args")
+    if args is None:
+        return default
+    try:
+        return float(getattr(args, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _decode_backpressure_admission_settle_sec() -> float:
+    return max(
+        0.0,
+        _decode_backpressure_float("decode_backpressure_admission_settle_sec", 1.0),
+    )
+
+
+def _decode_backpressure_int(name: str, default: int) -> int:
+    args = globals().get("global_args")
+    if args is None:
+        return default
+    try:
+        return int(getattr(args, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _decode_cache_dtype(metrics: dict[str, float]) -> str | None:
+    for key in metrics:
+        if not key.startswith("vllm:cache_config_info"):
+            continue
+        marker = 'cache_dtype="'
+        start = key.find(marker)
+        if start < 0:
+            continue
+        start += len(marker)
+        end = key.find('"', start)
+        if end > start:
+            return key[start:end]
+    return None
+
+
+def _effective_decode_backpressure_max_waiting(
+    metrics: dict[str, float],
+    *,
+    configured_max_waiting: int,
+    kv_usage: float | None,
+    max_kv_usage: float,
+) -> int:
+    if configured_max_waiting < 0:
+        return configured_max_waiting
+    if _decode_backpressure_waiting_policy() != "adaptive":
+        return configured_max_waiting
+    if _decode_cache_dtype(metrics) != "reflex_int4":
+        return configured_max_waiting
+    if kv_usage is None:
+        return configured_max_waiting
+    headroom = max(0.0, max_kv_usage - float(kv_usage))
+    if headroom <= 0.0:
+        return configured_max_waiting
+    headroom_per_waiting = max(
+        0.001,
+        _decode_backpressure_float(
+            "decode_backpressure_adaptive_kv_headroom_per_waiting",
+            0.04,
+        ),
+    )
+    adaptive_max_waiting = max(
+        0,
+        _decode_backpressure_int(
+            "decode_backpressure_adaptive_max_waiting",
+            4,
+        ),
+    )
+    adaptive_waiting = min(
+        adaptive_max_waiting,
+        int(headroom / headroom_per_waiting),
+    )
+    return max(configured_max_waiting, adaptive_waiting)
+
+
+class _DecodeAdmissionToken:
+    __slots__ = ("active", "key")
+
+    def __init__(self, key: str | None = None, active: bool = False):
+        self.key = key
+        self.active = active
+
+
+def _decode_admission_key(decode_client_info: dict) -> str:
+    return str(decode_client_info.get("url") or id(decode_client_info.get("client")))
+
+
+def _decode_admission_lock(key: str) -> asyncio.Lock:
+    lock = _decode_admission_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _decode_admission_locks[key] = lock
+    return lock
+
+
+def _local_pending_waiting(local_pending_waiting: Any) -> int:
+    try:
+        if callable(local_pending_waiting):
+            return max(0, int(local_pending_waiting()))
+        return max(0, int(local_pending_waiting))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _fetch_decode_metrics(decode_client_info: dict) -> dict[str, float]:
+    response = await decode_client_info["client"].get("/metrics")
+    response.raise_for_status()
+    return _parse_prometheus_metrics(response.text)
+
+
+async def _await_decode_backpressure(
+    decode_client_info: dict,
+    request_id: str,
+    local_pending_waiting: Any = 0,
+) -> None:
+    if _decode_backpressure_policy() != "metrics":
+        return
+
+    max_kv_usage = max(
+        0.0,
+        _decode_backpressure_float("decode_backpressure_max_kv_usage", 0.90),
+    )
+    max_waiting = _decode_backpressure_int("decode_backpressure_max_waiting", 0)
+    poll_interval = max(
+        0.001,
+        _decode_backpressure_float("decode_backpressure_poll_interval_sec", 0.05),
+    )
+    timeout = max(
+        0.0,
+        _decode_backpressure_float("decode_backpressure_timeout_sec", 300.0),
+    )
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    last_log = 0.0
+
+    while True:
+        try:
+            metrics = await _fetch_decode_metrics(decode_client_info)
+        except Exception as exc:  # noqa: BLE001 - fail open if telemetry breaks.
+            print(
+                "Decode backpressure metrics unavailable for request "
+                f"{request_id}: {exc!r}; admitting prefill."
+            )
+            return
+
+        kv_usage = _max_metric(metrics, "vllm:kv_cache_usage_perc")
+        waiting = _max_metric(metrics, "vllm:num_requests_waiting")
+        effective_max_waiting = _effective_decode_backpressure_max_waiting(
+            metrics,
+            configured_max_waiting=max_waiting,
+            kv_usage=kv_usage,
+            max_kv_usage=max_kv_usage,
+        )
+        pending_waiting = _local_pending_waiting(local_pending_waiting)
+        effective_waiting = (
+            None if waiting is None else waiting + float(pending_waiting)
+        )
+        kv_ready = kv_usage is None or kv_usage <= max_kv_usage
+        waiting_ready = (
+            effective_max_waiting < 0
+            or effective_waiting is None
+            or effective_waiting <= effective_max_waiting
+        )
+        if kv_ready and waiting_ready:
+            return
+
+        now = loop.time()
+        if timeout > 0.0 and now - started >= timeout:
+            print(
+                "Decode backpressure timed out for request "
+                f"{request_id} after {timeout:.3f}s "
+                f"(kv_usage={kv_usage}, waiting={waiting}, "
+                f"local_pending_waiting={pending_waiting}); admitting prefill."
+            )
+            return
+        if now - last_log >= 5.0:
+            decode_url = decode_client_info.get("url", "decode")
+            print(
+                "Decode backpressure holding request "
+                f"{request_id} for {decode_url}: "
+                f"kv_usage={kv_usage}, max_kv_usage={max_kv_usage}, "
+                f"waiting={waiting}, local_pending_waiting={pending_waiting}, "
+                f"max_waiting={effective_max_waiting}."
+            )
+            last_log = now
+        await asyncio.sleep(poll_interval)
+
+
+async def _acquire_decode_admission(
+    decode_client_info: dict,
+    request_id: str,
+) -> _DecodeAdmissionToken:
+    if _decode_backpressure_policy() != "metrics":
+        await _await_decode_backpressure(decode_client_info, request_id)
+        return _DecodeAdmissionToken()
+
+    max_waiting = _decode_backpressure_int("decode_backpressure_max_waiting", 0)
+    if max_waiting < 0:
+        await _await_decode_backpressure(decode_client_info, request_id)
+        return _DecodeAdmissionToken()
+
+    key = _decode_admission_key(decode_client_info)
+    lock = _decode_admission_lock(key)
+
+    async with lock:
+        # Metrics are sampled before decode sees the new request. Count local
+        # admissions that have crossed this gate but are not reflected yet.
+        await _await_decode_backpressure(
+            decode_client_info,
+            request_id,
+            local_pending_waiting=lambda: _decode_admission_pending.get(key, 0),
+        )
+        _decode_admission_pending[key] = _decode_admission_pending.get(key, 0) + 1
+        return _DecodeAdmissionToken(key=key, active=True)
+
+
+def _release_decode_admission(token: _DecodeAdmissionToken | None) -> None:
+    if token is None or not token.active or token.key is None:
+        return
+    pending = max(0, _decode_admission_pending.get(token.key, 0) - 1)
+    if pending:
+        _decode_admission_pending[token.key] = pending
+    else:
+        _decode_admission_pending.pop(token.key, None)
+    token.active = False
+
+
+def _schedule_decode_admission_release(
+    token: _DecodeAdmissionToken | None,
+) -> None:
+    if token is None or not token.active:
+        return
+    settle_sec = _decode_backpressure_admission_settle_sec()
+    if settle_sec <= 0.0:
+        _release_decode_admission(token)
+        return
+    loop = asyncio.get_running_loop()
+    loop.call_later(settle_sec, _release_decode_admission, token)
+
+
 async def _await_prefill_task_safely(
     prefill_task: asyncio.Task, request_id: str
 ) -> None:
@@ -418,38 +842,66 @@ async def _await_prefill_metadata_if_configured(
     prefill_task: asyncio.Task,
     request_id: str,
 ) -> dict | None:
+    started = time.perf_counter()
+    emitted = False
+
+    def _emit_metadata_wait(outcome: str) -> None:
+        nonlocal emitted
+        if emitted:
+            return
+        emitted = True
+        _emit_reflex_stage_profile(
+            request_id,
+            phase="prefill_metadata_wait",
+            ms=(time.perf_counter() - started) * 1000.0,
+            outcome=outcome,
+            source="proxy",
+        )
+
     if prefill_task.done():
         try:
-            return await prefill_task
+            result = await prefill_task
+            _emit_metadata_wait("done")
+            return result
         except asyncio.CancelledError:
+            _emit_metadata_wait("cancelled")
             return None
         except BaseExceptionGroup as exc:
             print(f"Prefill task failed for request {request_id}: {exc!r}")
+            _emit_metadata_wait("failed")
             return None
         except Exception as exc:  # noqa: BLE001 - proxy should log and continue.
             print(f"Prefill task failed for request {request_id}: {exc!r}")
+            _emit_metadata_wait("failed")
             return None
 
     timeout = _prefill_metadata_wait_timeout_sec()
     if timeout <= 0.0:
+        _emit_metadata_wait("disabled")
         return None
 
     try:
-        return await asyncio.wait_for(asyncio.shield(prefill_task), timeout=timeout)
+        result = await asyncio.wait_for(asyncio.shield(prefill_task), timeout=timeout)
+        _emit_metadata_wait("ready")
+        return result
     except asyncio.TimeoutError:
         print(
             "Prefill metadata wait timed out for request "
             f"{request_id} after {timeout:.3f}s; decode will use fallback metadata."
         )
+        _emit_metadata_wait("timeout")
         return None
     except asyncio.CancelledError:
         print(f"Prefill metadata wait cancelled for request {request_id}.")
+        _emit_metadata_wait("cancelled")
         return None
     except BaseExceptionGroup as exc:
         print(f"Prefill task failed for request {request_id}: {exc!r}")
+        _emit_metadata_wait("failed")
         return None
     except Exception as exc:  # noqa: BLE001 - proxy should log and continue.
         print(f"Prefill task failed for request {request_id}: {exc!r}")
+        _emit_metadata_wait("failed")
         return None
 
 
@@ -466,18 +918,33 @@ async def send_request_to_service(
         "X-data-parallel-rank": str(dp_rank),
     }
 
-    response = await client_info["client"].post(
-        endpoint, json=req_data, headers=headers
-    )
-    response.raise_for_status()
+    started = time.perf_counter()
+    outcome = "ok"
+    response = None
     try:
-        body = response.json()
-    except ValueError:
-        body = {}
-
-    # CRITICAL: Release connection back to pool
-    await response.aclose()
-    return _extract_reflex_kv_transfer_params(body)
+        response = await client_info["client"].post(
+            endpoint, json=req_data, headers=headers
+        )
+        response.raise_for_status()
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        return _extract_reflex_kv_transfer_params(body)
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        if response is not None:
+            await response.aclose()
+        _emit_reflex_stage_profile(
+            request_id,
+            phase="prefill",
+            ms=(time.perf_counter() - started) * 1000.0,
+            outcome=outcome,
+            source="proxy",
+            dp_rank=dp_rank,
+        )
 
 
 async def stream_service_response(
@@ -488,6 +955,7 @@ async def stream_service_response(
     req_data: dict,
     request_id: str,
     prefill_kv_transfer_params: dict | None = None,
+    decode_admission_token: _DecodeAdmissionToken | None = None,
 ):
     """
     Asynchronously stream response from a service using a client from the pool.
@@ -504,13 +972,44 @@ async def stream_service_response(
         request_id,
         prefill_kv_transfer_params,
     )
+    _schedule_decode_admission_release(decode_admission_token)
 
+    decode_started = time.perf_counter()
+    first_chunk_at: float | None = None
+    chunk_count = 0
     async with decode_client_info["client"].stream(
         "POST", endpoint, json=req_data, headers=headers
     ) as response:
         response.raise_for_status()
+        _release_decode_admission(decode_admission_token)
         async for chunk in response.aiter_bytes():
+            if first_chunk_at is None:
+                first_chunk_at = time.perf_counter()
+                _emit_reflex_stage_profile(
+                    request_id,
+                    phase="decode_waiting",
+                    ms=(first_chunk_at - decode_started) * 1000.0,
+                    source="proxy",
+                )
+            chunk_count += 1
             yield chunk
+    finished = time.perf_counter()
+    if first_chunk_at is None:
+        _emit_reflex_stage_profile(
+            request_id,
+            phase="decode_waiting",
+            ms=(finished - decode_started) * 1000.0,
+            source="proxy",
+            chunks=0,
+        )
+    else:
+        _emit_reflex_stage_profile(
+            request_id,
+            phase="decode_running",
+            ms=(finished - first_chunk_at) * 1000.0,
+            source="proxy",
+            chunks=chunk_count,
+        )
 
 
 async def _handle_completions(api: str, request: Request):
@@ -518,10 +1017,32 @@ async def _handle_completions(api: str, request: Request):
         raise HTTPException(status_code=503, detail="Service Unavailable")
 
     prefill_slot_acquired = False
+    decode_admission_token: _DecodeAdmissionToken | None = None
     try:
         req_data = await request.json()
         request_id = _resolve_request_id(req_data, request)
+        decode_client_info = get_next_client(request.app, "decode")
+        stage_started = time.perf_counter()
+        decode_admission_token = await _acquire_decode_admission(
+            decode_client_info,
+            request_id,
+        )
+        _emit_reflex_stage_profile(
+            request_id,
+            phase="proxy_wait",
+            ms=(time.perf_counter() - stage_started) * 1000.0,
+            stage="decode_admission",
+            source="proxy",
+        )
+        stage_started = time.perf_counter()
         prefill_slot_acquired = await _acquire_prefill_slot(request.app)
+        _emit_reflex_stage_profile(
+            request_id,
+            phase="proxy_wait",
+            ms=(time.perf_counter() - stage_started) * 1000.0,
+            stage="prefill_slot",
+            source="proxy",
+        )
 
         # Get the next prefill client in round-robin fashion
         prefill_client_info, prefill_dp_rank = get_next_client(request.app, "prefill")
@@ -532,8 +1053,13 @@ async def _handle_completions(api: str, request: Request):
                 prefill_client_info, prefill_dp_rank, api, req_data, request_id
             )
         )
-
-        decode_client_info = get_next_client(request.app, "decode")
+        if _release_prefill_slot_when_prefill_done(
+            request.app,
+            prefill_slot_acquired,
+            prefill_task,
+            request_id,
+        ):
+            prefill_slot_acquired = False
 
         # Stream response from decode service
         async def generate_stream():
@@ -552,15 +1078,18 @@ async def _handle_completions(api: str, request: Request):
                     req_data,
                     request_id=request_id,
                     prefill_kv_transfer_params=prefill_kv_transfer_params,
+                    decode_admission_token=decode_admission_token,
                 ):
                     yield chunk
             finally:
+                _release_decode_admission(decode_admission_token)
                 await _cleanup_prefill_task(prefill_task, request_id)
                 _release_prefill_slot(request.app, prefill_slot_acquired)
 
         return StreamingResponse(generate_stream(), media_type="application/json")
 
     except Exception as e:
+        _release_decode_admission(decode_admission_token)
         _release_prefill_slot(request.app, prefill_slot_acquired)
         import sys
         import traceback

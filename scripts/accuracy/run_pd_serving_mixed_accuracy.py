@@ -95,7 +95,7 @@ class MixedPrediction:
     end_offset_seconds: float = 0.0
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run mixed LongBench/Math500 accuracy through 1P1D serving."
     )
@@ -107,11 +107,56 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decode-port", type=int, default=8720)
     parser.add_argument("--proxy-port", type=int, default=8730)
     parser.add_argument("--prefill-bootstrap-port", type=int, default=8998)
-    parser.add_argument("--proxy-prefill-max-inflight", type=int, default=2)
+    parser.add_argument("--proxy-prefill-max-inflight", type=int, default=0)
     parser.add_argument(
         "--proxy-prefill-metadata-wait-timeout-sec",
         type=float,
         default=None,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-policy",
+        choices=["off", "metrics"],
+        default="off",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-max-kv-usage",
+        type=float,
+        default=0.90,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-max-waiting",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-waiting-policy",
+        choices=["fixed", "adaptive"],
+        default="fixed",
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-adaptive-max-waiting",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-adaptive-kv-headroom-per-waiting",
+        type=float,
+        default=0.04,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-poll-interval-sec",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-timeout-sec",
+        type=float,
+        default=300.0,
+    )
+    parser.add_argument(
+        "--proxy-decode-backpressure-admission-settle-sec",
+        type=float,
+        default=1.0,
     )
     parser.add_argument("--reflex-remote-chunk-tokens", type=int, default=512)
     parser.add_argument("--mooncake-protocol", default="rdma")
@@ -185,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decode-kv-cache-dtype", default="reflex_int4")
     parser.add_argument("--num-gpu-blocks-override", type=int, default=None)
     parser.add_argument("--force-triton-attn", action="store_true", default=True)
-    parser.add_argument("--enforce-eager", action="store_true", default=True)
+    parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--enable-reflex-trace", action="store_true")
     parser.add_argument(
         "--disable-reflex-prefill-page-metadata",
@@ -262,7 +307,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-interval-sec", type=float, default=1.0)
     parser.add_argument("--server-ready-timeout-sec", type=float, default=420.0)
     parser.add_argument("--request-timeout-sec", type=float, default=900.0)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _parse_str_csv(value: str, *, name: str) -> list[str]:

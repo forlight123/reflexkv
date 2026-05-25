@@ -23,6 +23,15 @@ def _args(tmp_path: Path) -> argparse.Namespace:
         num_gpu_blocks_override=736,
         proxy_prefill_max_inflight=4,
         proxy_prefill_metadata_wait_timeout_sec=None,
+        proxy_decode_backpressure_policy="off",
+        proxy_decode_backpressure_max_kv_usage=0.90,
+        proxy_decode_backpressure_max_waiting=0,
+        proxy_decode_backpressure_waiting_policy="fixed",
+        proxy_decode_backpressure_adaptive_max_waiting=4,
+        proxy_decode_backpressure_adaptive_kv_headroom_per_waiting=0.04,
+        proxy_decode_backpressure_poll_interval_sec=0.05,
+        proxy_decode_backpressure_timeout_sec=300.0,
+        proxy_decode_backpressure_admission_settle_sec=1.0,
         reflex_remote_chunk_tokens=512,
         max_concurrency=8,
         request_rate="inf",
@@ -48,6 +57,12 @@ def _args(tmp_path: Path) -> argparse.Namespace:
 
 def _value_after(command: list[str], flag: str) -> str:
     return command[command.index(flag) + 1]
+
+
+def test_ablation_matrix_defaults_to_unbounded_proxy_prefill_inflight():
+    args = matrix.parse_args([])
+
+    assert args.proxy_prefill_max_inflight == 0
 
 
 def test_ablation_matrix_builds_expected_cases_and_env(tmp_path):
@@ -85,13 +100,37 @@ def test_ablation_command_contains_mixed_accuracy_args_and_case_flags(tmp_path):
     assert _value_after(command, "--proxy-prefill-metadata-wait-timeout-sec") == "0.0"
 
 
-def test_bf16_baseline_uses_stable_prefill_backpressure(tmp_path):
+def test_bf16_baseline_uses_same_inflight_with_decode_backpressure(tmp_path):
     args = _args(tmp_path)
     case = matrix.selected_cases(args)[0]
 
     command = matrix.build_command(args, case, index=0)
 
-    assert _value_after(command, "--proxy-prefill-max-inflight") == "1"
+    assert _value_after(command, "--proxy-prefill-max-inflight") == str(
+        args.proxy_prefill_max_inflight
+    )
+    assert _value_after(command, "--proxy-decode-backpressure-policy") == "metrics"
+    assert _value_after(command, "--proxy-decode-backpressure-waiting-policy") == "fixed"
+    assert _value_after(command, "--proxy-decode-backpressure-admission-settle-sec") == "1.0"
+
+
+def test_reflex_cases_enable_adaptive_decode_waiting_backpressure(tmp_path):
+    args = _args(tmp_path)
+    case = matrix.selected_cases(args)[2]
+
+    command = matrix.build_command(args, case, index=2)
+
+    assert _value_after(command, "--decode-kv-cache-dtype") == "reflex_int4"
+    assert _value_after(command, "--proxy-decode-backpressure-policy") == "metrics"
+    assert _value_after(command, "--proxy-decode-backpressure-waiting-policy") == "adaptive"
+    assert _value_after(command, "--proxy-decode-backpressure-adaptive-max-waiting") == "4"
+    assert (
+        _value_after(
+            command,
+            "--proxy-decode-backpressure-adaptive-kv-headroom-per-waiting",
+        )
+        == "0.04"
+    )
 
 
 def test_ablation_command_passes_fixed_manifest_replay_args(tmp_path):

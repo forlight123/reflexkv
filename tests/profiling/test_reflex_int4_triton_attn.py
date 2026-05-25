@@ -3,7 +3,49 @@ from types import SimpleNamespace
 import torch
 
 import vllm.v1.attention.backends.triton_attn as triton_attn_module
-from vllm.v1.attention.backends.triton_attn import TritonAttentionImpl
+from vllm.v1.attention.backends.triton_attn import (
+    TritonAttentionImpl,
+    _select_seq_threshold_3d,
+)
+
+
+def test_reflex_int4_decode_uses_larger_3d_seq_threshold_by_default(monkeypatch):
+    monkeypatch.delenv("SEMANTIQ_REFLEX_INT4_3D_SEQ_THRESHOLD", raising=False)
+
+    threshold = _select_seq_threshold_3d(
+        base_threshold=16,
+        cache_dtype_str="reflex_int4",
+        decode_cudagraph_enabled=False,
+        capture_sizes=None,
+    )
+
+    assert threshold == 64
+
+
+def test_reflex_int4_3d_seq_threshold_respects_cudagraph_capture_sizes(monkeypatch):
+    monkeypatch.setenv("SEMANTIQ_REFLEX_INT4_3D_SEQ_THRESHOLD", "64")
+
+    threshold = _select_seq_threshold_3d(
+        base_threshold=16,
+        cache_dtype_str="reflex_int4",
+        decode_cudagraph_enabled=True,
+        capture_sizes=[1, 2, 4, 8, 16, 32],
+    )
+
+    assert threshold == 32
+
+
+def test_non_reflex_decode_keeps_default_3d_seq_threshold(monkeypatch):
+    monkeypatch.setenv("SEMANTIQ_REFLEX_INT4_3D_SEQ_THRESHOLD", "64")
+
+    threshold = _select_seq_threshold_3d(
+        base_threshold=16,
+        cache_dtype_str="auto",
+        decode_cudagraph_enabled=False,
+        capture_sizes=None,
+    )
+
+    assert threshold == 16
 
 
 def test_triton_attention_forwards_layer_reflex_int4_cache(monkeypatch):

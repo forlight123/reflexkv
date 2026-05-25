@@ -1,4 +1,5 @@
 import unittest
+from collections import deque
 
 from vllm.v1.core.precision_kv.demotion_planner import (
     DistanceDemotionPlanner,
@@ -20,6 +21,8 @@ class ReflexInt4PoolTest(unittest.TestCase):
 
     def test_int4_pool_reuses_freed_blocks_in_fifo_order(self):
         pool = Int4BlockPool(num_blocks=3)
+
+        self.assertIsInstance(pool._free_blocks, deque)
 
         self.assertEqual(pool.allocate(), 0)
         self.assertEqual(pool.allocate(), 1)

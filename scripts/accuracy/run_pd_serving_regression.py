@@ -434,7 +434,7 @@ def parse_args() -> argparse.Namespace:
         default=0.05,
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--proxy-prefill-max-inflight", type=int, default=2)
+    parser.add_argument("--proxy-prefill-max-inflight", type=int, default=0)
     parser.add_argument("--reflex-decode-pressure-warmup-tokens", type=int, default=32)
     parser.add_argument("--reflex-decode-pressure-ramp-tokens", type=int, default=512)
     parser.add_argument("--reflex-short-prefill-pages", type=int, default=64)

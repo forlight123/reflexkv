@@ -72,6 +72,7 @@ class BlockTable:
             self.max_num_reqs, self.max_num_blocks_per_req, dtype=torch.int32
         )
         self.num_blocks_per_row = np.zeros(max_num_reqs, dtype=np.int32)
+        self.num_reflex_int4_blocks_per_row = np.zeros(max_num_reqs, dtype=np.int32)
 
         self.slot_mapping = self._make_buffer(
             self.max_num_batched_tokens, dtype=torch.int64
@@ -117,9 +118,13 @@ class BlockTable:
         start = self.num_blocks_per_row[row_idx]
         self.num_blocks_per_row[row_idx] += num_blocks
         self.block_table.np[row_idx, start : start + num_blocks] = block_ids
+        self.num_reflex_int4_blocks_per_row[row_idx] += int(
+            np.count_nonzero(np.asarray(block_ids) < 0)
+        )
 
     def add_row(self, block_ids: list[int], row_idx: int) -> None:
         self.num_blocks_per_row[row_idx] = 0
+        self.num_reflex_int4_blocks_per_row[row_idx] = 0
         self.append_row(block_ids, row_idx)
 
     def clear_row(self, row_idx: int) -> None:
@@ -127,16 +132,23 @@ class BlockTable:
         if num_blocks > 0:
             self.block_table.np[row_idx, :num_blocks] = 0
         self.num_blocks_per_row[row_idx] = 0
+        self.num_reflex_int4_blocks_per_row[row_idx] = 0
 
     def move_row(self, src: int, tgt: int) -> None:
         num_blocks = self.num_blocks_per_row[src]
         block_table_np = self.block_table.np
         block_table_np[tgt, :num_blocks] = block_table_np[src, :num_blocks]
         self.num_blocks_per_row[tgt] = num_blocks
+        self.num_reflex_int4_blocks_per_row[tgt] = (
+            self.num_reflex_int4_blocks_per_row[src]
+        )
 
     def swap_row(self, src: int, tgt: int) -> None:
         src_tgt, tgt_src = [src, tgt], [tgt, src]
         self.num_blocks_per_row[src_tgt] = self.num_blocks_per_row[tgt_src]
+        self.num_reflex_int4_blocks_per_row[src_tgt] = (
+            self.num_reflex_int4_blocks_per_row[tgt_src]
+        )
         self.block_table.np[src_tgt] = self.block_table.np[tgt_src]
 
     def update_block_id(self, row_idx: int, page_idx: int, block_id: int) -> None:
@@ -144,7 +156,15 @@ class BlockTable:
             raise IndexError(f"row_idx {row_idx} is out of range.")
         if page_idx < 0 or page_idx >= self.max_num_blocks_per_req:
             raise IndexError(f"page_idx {page_idx} is out of range.")
+        old_block_id = int(self.block_table.np[row_idx, page_idx])
         self.block_table.np[row_idx, page_idx] = block_id
+        if old_block_id < 0 and block_id >= 0:
+            self.num_reflex_int4_blocks_per_row[row_idx] = max(
+                0,
+                self.num_reflex_int4_blocks_per_row[row_idx] - 1,
+            )
+        elif old_block_id >= 0 and block_id < 0:
+            self.num_reflex_int4_blocks_per_row[row_idx] += 1
 
     def compute_slot_mapping(
         self,
@@ -177,6 +197,8 @@ class BlockTable:
     def clear(self) -> None:
         self.block_table.gpu.fill_(0)
         self.block_table.cpu.fill_(0)
+        self.num_blocks_per_row.fill(0)
+        self.num_reflex_int4_blocks_per_row.fill(0)
 
     @staticmethod
     def map_to_kernel_blocks(

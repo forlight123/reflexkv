@@ -7,6 +7,7 @@ from eval.utils.eval_reasoning import (
     evaluate_file,
     extract_last_boxed_content,
     is_boxed_answer_correct,
+    is_ruler_string_match_correct,
 )
 
 
@@ -44,6 +45,11 @@ def test_is_boxed_answer_correct_handles_wrapped_boxed_prediction():
 
 def test_is_boxed_answer_correct_uses_numeric_float_fallback():
     assert is_boxed_answer_correct(r"Answer: \boxed{4.0}", "4") is True
+
+
+def test_is_ruler_string_match_correct_requires_all_references():
+    assert is_ruler_string_match_correct("The values are 123 and 456.", ["123", "456"])
+    assert not is_ruler_string_match_correct("The value is 123.", ["123", "456"])
 
 
 @pytest.mark.parametrize(
@@ -105,3 +111,36 @@ def test_evaluate_file_writes_result_and_badcases(tmp_path):
             "original_pred": "Answer is \\boxed{5}",
         }
     ]
+
+
+def test_evaluate_file_supports_ruler_string_match(tmp_path):
+    pred_file = tmp_path / "pred.jsonl"
+    pred_file.write_text(
+        json.dumps(
+            {
+                "pred": "The hidden values are 123 and 456.",
+                "answers": ["123", "456"],
+                "meta": {"unique_id": "ok"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "pred": "The hidden value is 123.",
+                "answers": ["123", "456"],
+                "meta": {"unique_id": "bad"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "reasoning_dataset2metric.json").write_text(
+        json.dumps({"ruler_niah_multikey_2_4k": "ruler_string_match"}),
+        encoding="utf-8",
+    )
+
+    score = evaluate_file(str(pred_file), "ruler_niah_multikey_2_4k", str(tmp_path))
+
+    assert score == 0.5
+    result_payload = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert result_payload["metric"] == "ruler_string_match"

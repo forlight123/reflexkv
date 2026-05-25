@@ -351,6 +351,8 @@ class CommonAttentionMetadata:
     causal: bool = True
     has_reflex_int4_blocks: bool = False
     """True when this batch's active block table contains ReFlexKV INT4 pages."""
+    reflex_int4_block_counts_cpu: np.ndarray | None = None
+    """Per-request active INT4 page counts for cheap microbatch dispatch."""
 
     # Needed by FastPrefillAttentionBuilder
     logits_indices_padded: torch.Tensor | None = None
@@ -445,6 +447,9 @@ class CommonAttentionMetadata:
             slot_mapping=self.slot_mapping[:num_actual_tokens],
             causal=self.causal,
             has_reflex_int4_blocks=self.has_reflex_int4_blocks,
+            reflex_int4_block_counts_cpu=maybe_slice_reqs(
+                self.reflex_int4_block_counts_cpu
+            ),
             logits_indices_padded=self.logits_indices_padded,
             num_logits_indices=self.num_logits_indices,
             encoder_seq_lens=maybe_slice_reqs(self.encoder_seq_lens),

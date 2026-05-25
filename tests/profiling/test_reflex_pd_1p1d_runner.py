@@ -20,6 +20,15 @@ def _args(tmp_path: Path) -> argparse.Namespace:
         prefill_bootstrap_port=8998,
         proxy_prefill_max_inflight=2,
         proxy_prefill_metadata_wait_timeout_sec=None,
+        proxy_decode_backpressure_policy="metrics",
+        proxy_decode_backpressure_max_kv_usage=0.88,
+        proxy_decode_backpressure_max_waiting=1,
+        proxy_decode_backpressure_waiting_policy="adaptive",
+        proxy_decode_backpressure_adaptive_max_waiting=6,
+        proxy_decode_backpressure_adaptive_kv_headroom_per_waiting=0.03,
+        proxy_decode_backpressure_poll_interval_sec=0.05,
+        proxy_decode_backpressure_timeout_sec=30.0,
+        proxy_decode_backpressure_admission_settle_sec=1.5,
         mooncake_protocol="rdma",
         mooncake_num_workers=10,
         reflex_keep_recent_blocks=4,
@@ -189,6 +198,37 @@ def test_1p1d_env_and_proxy_benchmark_target_the_expected_processes(tmp_path):
     assert (
         proxy_cmd[proxy_cmd.index("--prefill-metadata-wait-timeout-sec") + 1]
         == "5.0"
+    )
+    assert (
+        proxy_cmd[proxy_cmd.index("--decode-backpressure-policy") + 1]
+        == "metrics"
+    )
+    assert (
+        proxy_cmd[proxy_cmd.index("--decode-backpressure-max-kv-usage") + 1]
+        == "0.88"
+    )
+    assert (
+        proxy_cmd[proxy_cmd.index("--decode-backpressure-max-waiting") + 1]
+        == "1"
+    )
+    assert (
+        proxy_cmd[proxy_cmd.index("--decode-backpressure-waiting-policy") + 1]
+        == "adaptive"
+    )
+    assert (
+        proxy_cmd[proxy_cmd.index("--decode-backpressure-adaptive-max-waiting") + 1]
+        == "6"
+    )
+    assert (
+        proxy_cmd[
+            proxy_cmd.index("--decode-backpressure-adaptive-kv-headroom-per-waiting")
+            + 1
+        ]
+        == "0.03"
+    )
+    assert (
+        proxy_cmd[proxy_cmd.index("--decode-backpressure-admission-settle-sec") + 1]
+        == "1.5"
     )
 
     assert bench_cmd[bench_cmd.index("--base-url") + 1] == "http://127.0.0.1:8510"

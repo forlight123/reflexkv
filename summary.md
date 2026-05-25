@@ -1,6 +1,6 @@
 # ReFlexKV 当前实现总结
 
-更新时间：2026-05-22，Asia/Shanghai。
+更新时间：2026-05-23，Asia/Shanghai。
 
 本文档是 SemantiQ/ReFlexKV 当前代码状态、策略设计、实现细节和实验结果的详细交接记录。它对照 `reflexkv.md` 的论文级目标，说明当前系统已经做到了什么、这轮修复解决了什么、真实效果是什么，以及后续还需要继续推进哪些工作。
 
@@ -35,6 +35,71 @@ ReFlexKV 现在已经不是单纯的“INT4 KV cache 量化”原型，而是一
    - 已有：prompt/page protection、landing contract 的 page-level protection、`PrefixPrecisionContractManager`、copy-on-demote metadata/hook、shared page 单元测试。
    - 未验证：没有真实 shared-prefix workload；最新 smoke 使用的路径里 `candidate_shared_bf16_pages_total=0`、`candidate_copy_on_demote_pages_total=0`。
    - 结论：当前 prefix 是 control-plane skeleton + safety hook，不是完整 multi-version prefix cache / precision ownership / eviction 系统。
+
+### 1.1.1 2026-05-23 论文实验数据准备
+
+为了从 n=100 smoke 走向 ATC/OSDI 级实验，已先补齐 reasoning 和 RULER 测试文件：
+
+Reasoning 数据：
+
+| dataset | source | output | samples | status |
+|---|---|---|---:|---|
+| GSM8K | `data/reasoning/gsm8k.parquet` | `data/reasoning/gsm8k.jsonl` | 1319 | 已转换 |
+| AIME 2024 | `data/reasoning/aime24.parquet` | `data/reasoning/aime24.jsonl` | 30 | 已转换 |
+| AIME 2025 | `data/reasoning/aime25.jsonl` | `data/reasoning/aime25.jsonl` | 30 | 已标准化重写 |
+| Math500 | `data/reasoning/math500.jsonl` | 原文件 | 500 | 已有 |
+
+新增转换脚本：
+
+```text
+gen_data/prepare_reasoning_datasets.py
+```
+
+该脚本会：
+
+- 从 GSM8K 的 `####` 后提取最终答案；
+- 将 GSM8K/AIME 统一成 `{problem, answer, unique_id}` reasoning schema；
+- 更新 `eval/config/reasoning_dataset2{prompt,maxlen,metric,samples}.json`；
+- 当前 max_new_tokens：Math500/AIME=4096，GSM8K=1024；
+- metric 暂用现有 `boxed_accuracy`，因此 prompt 要求最终答案放在 `\boxed{}`。
+
+RULER 数据：
+
+新增生成脚本：
+
+```text
+gen_data/prepare_ruler_datasets.py
+```
+
+已用 RULER 官方 synthetic generator 生成 3 个 NIAH/retrieval 任务，每个 4 个长度，每组 100 samples：
+
+| task | lengths | normalized output |
+|---|---|---|
+| `niah_single_1` | 4k/8k/16k/32k | `data/ruler/ruler_niah_single_1_{4k,8k,16k,32k}.jsonl` |
+| `niah_multikey_2` | 4k/8k/16k/32k | `data/ruler/ruler_niah_multikey_2_{4k,8k,16k,32k}.jsonl` |
+| `niah_multikey_3` | 4k/8k/16k/32k | `data/ruler/ruler_niah_multikey_3_{4k,8k,16k,32k}.jsonl` |
+
+RULER raw 文件保存在：
+
+```text
+data/ruler_raw/
+```
+
+RULER normalized 文件保存在：
+
+```text
+data/ruler/
+```
+
+校验结果：
+
+- 12 个 normalized RULER jsonl 文件；
+- 每个 100 samples，总计 1200 samples；
+- raw + normalized 共 2400 行；
+- 每个文件的 `length <= max_seq_length`，无超长样本；
+- normalized `unique_id` 使用文件行号，避免 RULER raw `index` 字段不是稳定样本序号的问题。
+
+注意：RULER 文件已经生成，但还没有接入 ReFlexKV mixed serving/evaluator。下一步需要把 RULER 接成单独 `ruler` task 或转接 LongBench-style retrieval evaluator，不能直接用 reasoning 的 `boxed_accuracy`。
 
 ### 1.2 最新 admission 修复结果
 
@@ -2942,3 +3007,154 @@ BF16 和 ReFlexKV 都完整生成 `mixed_summary.json`，GPU0/1/4/5 已释放。
 | targeted removal/background promotion tests | 4 passed |
 | profiling/accuracy regression subset | 210 passed |
 | CUDA direct attention tests | 2 passed |
+
+## 21. 2026-05-23 n=500 公平 backpressure baseline
+
+这轮先修正 BF16 baseline 的公平性问题：不再用
+`proxy_prefill_max_inflight=1` 作为主对比，而是在 proxy 中加入通用
+decode-capacity-aware backpressure。BF16 和 ReFlexKV 都使用：
+
+- `proxy_prefill_max_inflight=4`
+- `proxy_decode_backpressure_policy=metrics`
+- `proxy_decode_backpressure_max_kv_usage=0.90`
+- `proxy_decode_backpressure_max_waiting=0`
+- 同一个 `paper_accuracy_n500_seed0_manifest.jsonl`
+- 同一个 `max_concurrency=4`
+- 同一个 P/D serving path
+
+新增实现：
+
+- proxy 在启动 remote prefill 前轮询 decode `/metrics`；
+- 当 decode KV usage 超过阈值，或 decode waiting requests 大于阈值时，暂停新的 prefill admission；
+- telemetry 不可用时 fail-open，避免 proxy 变成单点阻塞；
+- ablation matrix 默认 BF16 和 ReFlexKV 都走同一套 decode backpressure；
+- BF16 baseline 不再被 case preset 强制改成 `inflight=1`。
+
+相关验证：
+
+| check | result |
+|---|---:|
+| proxy state tests | 8 passed |
+| runner / matrix command tests | 19 passed |
+| selected accuracy runner tests | 2 passed |
+| combined targeted tests | 21 passed |
+| n=20 BF16 smoke | 20/20, no failure |
+| n=20 ReFlexKV smoke | 20/20, no failure |
+
+### 21.1 n=500 workload
+
+| dataset | samples |
+|---|---:|
+| gov_report | 80 |
+| qasper | 80 |
+| passage_retrieval_en | 80 |
+| math500 | 90 |
+| gsm8k | 110 |
+| aime24 | 30 |
+| aime25 | 30 |
+| total | 500 |
+
+这批 manifest 没有 prompt truncation。最大 `prompt + max_new_tokens`
+小于 `max_model_len=32768`。
+
+### 21.2 n=500 result: BF16-backpressure vs ReFlexKV-backpressure
+
+Run dirs：
+
+- BF16:
+  `outputs/accuracy/paper_accuracy_n500_bf16_backpressure_inflight4_2026-05-23/bf16_backpressure_n500`
+- ReFlexKV:
+  `outputs/accuracy/paper_accuracy_n500_reflex_backpressure_b736_2026-05-23/reflex_backpressure_n500`
+
+Overall：
+
+| metric | BF16-backpressure | ReFlexKV-backpressure |
+|---|---:|---:|
+| completed | 500/500 | 500/500 |
+| failed | 0 | 0 |
+| duration | 3941.43 s | 4448.47 s |
+| goodput | 0.1269 req/s | 0.1124 req/s |
+| weighted avg latency | 31.29 s | 35.34 s |
+| weighted avg score | 0.4975 | 0.5155 |
+| proxy backpressure holds | 91 | 34 |
+| decode max KV usage | 91.80% | 100.00% |
+| decode avg KV usage | 31.77% | 56.28% |
+| decode max waiting | 2 | 3 |
+| decode avg waiting | 0.280 | 0.191 |
+
+Per-dataset score：
+
+| dataset | BF16 | ReFlexKV | delta |
+|---|---:|---:|---:|
+| gov_report | 0.3551 | 0.3454 | -0.0097 |
+| qasper | 0.2011 | 0.2130 | +0.0118 |
+| passage_retrieval_en | 0.9281 | 0.9134 | -0.0147 |
+| math500 | 0.4778 | 0.5333 | +0.0556 |
+| gsm8k | 0.7818 | 0.8364 | +0.0545 |
+| aime24 | 0.0000 | 0.0000 | 0.0000 |
+| aime25 | 0.0333 | 0.0000 | -0.0333 |
+
+Per-dataset average latency：
+
+| dataset | BF16 | ReFlexKV |
+|---|---:|---:|
+| gov_report | 15.34 s | 18.23 s |
+| qasper | 5.48 s | 6.64 s |
+| passage_retrieval_en | 6.62 s | 7.33 s |
+| math500 | 71.37 s | 79.04 s |
+| gsm8k | 20.71 s | 22.60 s |
+| aime24 | 77.91 s | 91.51 s |
+| aime25 | 80.39 s | 91.69 s |
+
+ReFlexKV telemetry：
+
+| metric | value |
+|---|---:|
+| demotion_event_count | 976 |
+| demoted_pages_total | 64063 |
+| released_bf16_blocks_total | 64063 |
+| admission_success_after_demote_total | 481 |
+| admission_blocked_total | 0 |
+| admission_infeasible_total | 0 |
+| mean_int4_ratio | 0.3661 |
+| max_int4_ratio | 0.8891 |
+| demotion_gpu_ms_total | 3899.112 |
+| background_promoted_pages_total | 1565 |
+| recovery_exec_pages_total | 1565 |
+| attention_trace_event_count | 0 |
+
+Log scan：
+
+| log issue | BF16 | ReFlexKV |
+|---|---:|---:|
+| ERROR | 0 | 0 |
+| Traceback | 0 | 0 |
+| Prefill task failed | 0 | 0 |
+| P-side ready timeout | 0 | 0 |
+| backpressure timeout | 0 | 0 |
+
+### 21.3 Interpretation
+
+这轮结果不能写成 ReFlexKV 吞吐优于 BF16。相反，在 full-memory BF16
+加通用 backpressure 后，BF16 稳定跑完，并且 goodput 更高。当前结果说明：
+
+- `inflight=1` BF16 baseline 不够公平，应该降级为 conservative baseline；
+- 通用 decode backpressure 是必须的 serving integration 组件；
+- ReFlexKV 在 n=500 下机制稳定：demotion 触发 64063 pages，admission
+  没有 blocked/infeasible，P/D 没有 timeout；
+- 但当前 ReFlexKV 的 planner/demotion/INT4 path 有可见开销；
+- 当前 ReFlexKV 使用 `num_gpu_blocks_override=736` 制造 decode BF16
+  pressure，而 BF16-backpressure 是 full-memory baseline，因此这不是同容量
+  throughput 对比。
+
+下一步论文实验应拆成三组：
+
+1. Full-memory BF16-backpressure vs ReFlexKV-backpressure：证明 ReFlexKV
+   在不降精度的情况下可稳定运行，但不主张吞吐优势。
+2. Same BF16 block budget baseline：BF16 也限制到同等 BF16 block frontier，
+   测它是否卡住、降吞吐或需要更强 backpressure。
+3. Pressure sweep：扫 `num_gpu_blocks_override` / request rate /
+   max_concurrency，找到 BF16 刚开始不稳定而 ReFlexKV 仍稳定的区间。
+
+这轮最重要的结论是：系统稳定性已经明显改善，但 ReFlexKV 的论文主结果还需要
+在同容量压力矩阵里证明，而不是用 full-memory BF16 做吞吐加速结论。

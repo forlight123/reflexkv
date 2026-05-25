@@ -113,6 +113,7 @@ class ReflexDemotionPlan:
     items: list[ReflexDemotion]
     candidate_bf16_blocks: int = 0
     planned_bf16_blocks: int | None = None
+    candidate_pages: tuple[ReflexPageMeta, ...] = ()
     candidate_breakdown: ReflexCandidateBreakdown = field(
         default_factory=ReflexCandidateBreakdown
     )
@@ -545,6 +546,7 @@ class DistanceDemotionPlanner:
         )
         planned_bf16_blocks = min(target_bf16_blocks, candidate_bf16_blocks)
         if dry_run:
+            cached_frontier_pages = tuple(selectable_pages[:candidate_bf16_blocks])
             candidate_breakdown = ReflexCandidateBreakdown(
                 raw_bf16_pages=raw_bf16_pages,
                 open_bf16_pages=open_bf16_pages,
@@ -571,10 +573,12 @@ class DistanceDemotionPlanner:
                 [],
                 candidate_bf16_blocks=candidate_bf16_blocks,
                 planned_bf16_blocks=planned_bf16_blocks,
+                candidate_pages=cached_frontier_pages,
                 candidate_breakdown=candidate_breakdown,
             )
 
-        for page in selectable_pages[:candidate_bf16_blocks]:
+        actual_candidate_pages = selectable_pages[:candidate_bf16_blocks]
+        for page in actual_candidate_pages:
             if len(selected) >= target_bf16_blocks:
                 break
             int4_block_id = int4_pool.allocate()
@@ -623,6 +627,7 @@ class DistanceDemotionPlanner:
         return ReflexDemotionPlan(
             selected,
             candidate_bf16_blocks=candidate_bf16_blocks,
+            candidate_pages=tuple(actual_candidate_pages[: len(selected)]),
             candidate_breakdown=candidate_breakdown,
         )
 

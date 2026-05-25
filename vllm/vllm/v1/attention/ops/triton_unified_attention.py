@@ -254,6 +254,13 @@ def kernel_unified_attention_2d(
             block_tables_ptr + block_table_offset + seq_offset // BLOCK_SIZE
         ).to(tl.int64)
         is_reflex_int4 = encoded_block_idx < 0
+        valid_reflex_int4 = is_reflex_int4 & tile_mask
+        tile_valid_count = tl.sum(tile_mask.to(tl.int32), axis=0)
+        tile_int4_count = tl.sum(valid_reflex_int4.to(tl.int32), axis=0)
+        tile_has_reflex_int4 = tile_int4_count > 0
+        tile_all_reflex_int4 = tile_has_reflex_int4 & (
+            tile_int4_count == tile_valid_count
+        )
         physical_block_idx = tl.where(is_reflex_int4, 0, encoded_block_idx)
         reflex_int4_block_idx = tl.where(is_reflex_int4, -encoded_block_idx - 1, 0)
 
@@ -271,7 +278,34 @@ def kernel_unified_attention_2d(
             + (seq_offset % BLOCK_SIZE)[None, :] * stride_k_cache_1
         )
 
-        if USE_REFLEX_INT4:
+        if USE_REFLEX_INT4 and tile_all_reflex_int4:
+            packed_offsets = offs_d // 2
+            use_high = offs_d % 2 == 1
+            int4_k_base = (
+                reflex_int4_cache_ptr
+                + reflex_int4_block_idx[None, :] * stride_reflex_int4_cache_0
+                + (seq_offset % BLOCK_SIZE)[None, :] * stride_reflex_int4_cache_2
+                + kv_head_idx * stride_reflex_int4_cache_3
+            )
+            int4_k_offset = int4_k_base + packed_offsets[:, None] * (
+                stride_reflex_int4_cache_4
+            )
+            packed = tl.load(
+                int4_k_offset,
+                mask=(dim_mask[:, None] & tile_mask[None, :]),
+                other=0,
+            ).to(tl.int32)
+            low = packed & 0xF
+            high = (packed >> 4) & 0xF
+            nibble = tl.where(use_high[:, None], high, low)
+            signed = tl.where(nibble >= 8, nibble - 16, nibble).to(tl.float32)
+            scale_byte = tl.load(
+                int4_k_base + (HEAD_SIZE // 2) * stride_reflex_int4_cache_4,
+                mask=tile_mask[None, :],
+                other=127,
+            ).to(tl.float32)
+            K = (signed * tl.exp2(scale_byte - 127.0)).to(Q.dtype)
+        elif USE_REFLEX_INT4 and tile_has_reflex_int4:
             # K : (HEAD_SIZE, TILE_SIZE)
             K_load = tl.load(
                 key_cache_ptr + k_offset,
@@ -331,7 +365,35 @@ def kernel_unified_attention_2d(
             else:
                 K = K_load
 
-        if USE_REFLEX_INT4:
+        if USE_REFLEX_INT4 and tile_all_reflex_int4:
+            packed_offsets = offs_d // 2
+            use_high = offs_d % 2 == 1
+            int4_v_base = (
+                reflex_int4_cache_ptr
+                + reflex_int4_block_idx[:, None] * stride_reflex_int4_cache_0
+                + stride_reflex_int4_cache_1
+                + (seq_offset % BLOCK_SIZE)[:, None] * stride_reflex_int4_cache_2
+                + kv_head_idx * stride_reflex_int4_cache_3
+            )
+            int4_v_offset = int4_v_base + packed_offsets[None, :] * (
+                stride_reflex_int4_cache_4
+            )
+            packed = tl.load(
+                int4_v_offset,
+                mask=(dim_mask[None, :] & tile_mask[:, None]),
+                other=0,
+            ).to(tl.int32)
+            low = packed & 0xF
+            high = (packed >> 4) & 0xF
+            nibble = tl.where(use_high[None, :], high, low)
+            signed = tl.where(nibble >= 8, nibble - 16, nibble).to(tl.float32)
+            scale_byte = tl.load(
+                int4_v_base + (HEAD_SIZE // 2) * stride_reflex_int4_cache_4,
+                mask=tile_mask[:, None],
+                other=127,
+            ).to(tl.float32)
+            V = (signed * tl.exp2(scale_byte - 127.0)).to(Q.dtype)
+        elif USE_REFLEX_INT4 and tile_has_reflex_int4:
             # V : (TILE_SIZE, HEAD_SIZE)
             V_load = tl.load(
                 value_cache_ptr + v_offset,
@@ -710,6 +772,13 @@ def kernel_unified_attention_3d(
             block_tables_ptr + block_table_offset + seq_offset // BLOCK_SIZE
         ).to(tl.int64)
         is_reflex_int4 = encoded_block_idx < 0
+        valid_reflex_int4 = is_reflex_int4 & tile_mask
+        tile_valid_count = tl.sum(tile_mask.to(tl.int32), axis=0)
+        tile_int4_count = tl.sum(valid_reflex_int4.to(tl.int32), axis=0)
+        tile_has_reflex_int4 = tile_int4_count > 0
+        tile_all_reflex_int4 = tile_has_reflex_int4 & (
+            tile_int4_count == tile_valid_count
+        )
         physical_block_idx = tl.where(is_reflex_int4, 0, encoded_block_idx)
         reflex_int4_block_idx = tl.where(is_reflex_int4, -encoded_block_idx - 1, 0)
 
@@ -727,7 +796,34 @@ def kernel_unified_attention_3d(
             + (seq_offset % BLOCK_SIZE)[None, :] * stride_k_cache_1
         )
 
-        if USE_REFLEX_INT4:
+        if USE_REFLEX_INT4 and tile_all_reflex_int4:
+            packed_offsets = offs_d // 2
+            use_high = offs_d % 2 == 1
+            int4_k_base = (
+                reflex_int4_cache_ptr
+                + reflex_int4_block_idx[None, :] * stride_reflex_int4_cache_0
+                + (seq_offset % BLOCK_SIZE)[None, :] * stride_reflex_int4_cache_2
+                + kv_head_idx * stride_reflex_int4_cache_3
+            )
+            int4_k_offset = int4_k_base + packed_offsets[:, None] * (
+                stride_reflex_int4_cache_4
+            )
+            packed = tl.load(
+                int4_k_offset,
+                mask=(dim_mask[:, None] & tile_mask[None, :]),
+                other=0,
+            ).to(tl.int32)
+            low = packed & 0xF
+            high = (packed >> 4) & 0xF
+            nibble = tl.where(use_high[:, None], high, low)
+            signed = tl.where(nibble >= 8, nibble - 16, nibble).to(tl.float32)
+            scale_byte = tl.load(
+                int4_k_base + (HEAD_SIZE // 2) * stride_reflex_int4_cache_4,
+                mask=tile_mask[None, :],
+                other=127,
+            ).to(tl.float32)
+            K = (signed * tl.exp2(scale_byte - 127.0)).to(Q.dtype)
+        elif USE_REFLEX_INT4 and tile_has_reflex_int4:
             # K : (HEAD_SIZE, TILE_SIZE)
             K_load = tl.load(
                 key_cache_ptr + k_offset,
@@ -787,7 +883,35 @@ def kernel_unified_attention_3d(
             else:
                 K = K_load
 
-        if USE_REFLEX_INT4:
+        if USE_REFLEX_INT4 and tile_all_reflex_int4:
+            packed_offsets = offs_d // 2
+            use_high = offs_d % 2 == 1
+            int4_v_base = (
+                reflex_int4_cache_ptr
+                + reflex_int4_block_idx[:, None] * stride_reflex_int4_cache_0
+                + stride_reflex_int4_cache_1
+                + (seq_offset % BLOCK_SIZE)[:, None] * stride_reflex_int4_cache_2
+                + kv_head_idx * stride_reflex_int4_cache_3
+            )
+            int4_v_offset = int4_v_base + packed_offsets[None, :] * (
+                stride_reflex_int4_cache_4
+            )
+            packed = tl.load(
+                int4_v_offset,
+                mask=(dim_mask[None, :] & tile_mask[:, None]),
+                other=0,
+            ).to(tl.int32)
+            low = packed & 0xF
+            high = (packed >> 4) & 0xF
+            nibble = tl.where(use_high[None, :], high, low)
+            signed = tl.where(nibble >= 8, nibble - 16, nibble).to(tl.float32)
+            scale_byte = tl.load(
+                int4_v_base + (HEAD_SIZE // 2) * stride_reflex_int4_cache_4,
+                mask=tile_mask[:, None],
+                other=127,
+            ).to(tl.float32)
+            V = (signed * tl.exp2(scale_byte - 127.0)).to(Q.dtype)
+        elif USE_REFLEX_INT4 and tile_has_reflex_int4:
             # V : (TILE_SIZE, HEAD_SIZE)
             V_load = tl.load(
                 value_cache_ptr + v_offset,

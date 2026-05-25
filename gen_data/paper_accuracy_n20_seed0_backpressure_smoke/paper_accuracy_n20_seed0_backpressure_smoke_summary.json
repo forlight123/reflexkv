@@ -1,0 +1,51 @@
+{
+  "trace_csv": "data/burstgpt/data/BurstGPT_1.csv",
+  "trace_profile": "gen_data/paper_accuracy_n20_seed0_backpressure_smoke/paper_accuracy_n20_seed0_backpressure_smoke_trace_profile.jsonl",
+  "manifest": "gen_data/paper_accuracy_n20_seed0_backpressure_smoke/paper_accuracy_n20_seed0_backpressure_smoke_manifest.jsonl",
+  "summary": "gen_data/paper_accuracy_n20_seed0_backpressure_smoke/paper_accuracy_n20_seed0_backpressure_smoke_summary.json",
+  "total_requests": 20,
+  "seed": 0,
+  "time_scale": 0.05,
+  "trace": {
+    "selected_rows": 20,
+    "selected_failed_response_rows": 0,
+    "first_timestamp_sec": 5.0,
+    "last_timestamp_sec": 56581.0,
+    "duration_sec": 365.0,
+    "scaled_duration_sec": 18.25,
+    "long_input_tokens": 2048,
+    "long_output_tokens": 512,
+    "long_input_requests": 7,
+    "long_output_requests": 5
+  },
+  "datasets": {
+    "aime24": {
+      "requests": 1,
+      "task": "reasoning"
+    },
+    "aime25": {
+      "requests": 1,
+      "task": "reasoning"
+    },
+    "gov_report": {
+      "requests": 4,
+      "task": "longbench"
+    },
+    "gsm8k": {
+      "requests": 4,
+      "task": "reasoning"
+    },
+    "math500": {
+      "requests": 4,
+      "task": "reasoning"
+    },
+    "passage_retrieval_en": {
+      "requests": 3,
+      "task": "longbench"
+    },
+    "qasper": {
+      "requests": 3,
+      "task": "longbench"
+    }
+  }
+}

@@ -1,3 +1,18 @@
 {
-  "math500": "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}."
+  "math500": "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}.",
+  "gsm8k": "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}.",
+  "ruler_niah_single_1_4k": "{problem}",
+  "ruler_niah_single_1_8k": "{problem}",
+  "ruler_niah_single_1_16k": "{problem}",
+  "ruler_niah_single_1_32k": "{problem}",
+  "ruler_niah_multikey_2_4k": "{problem}",
+  "ruler_niah_multikey_2_8k": "{problem}",
+  "ruler_niah_multikey_2_16k": "{problem}",
+  "ruler_niah_multikey_2_32k": "{problem}",
+  "ruler_niah_multikey_3_4k": "{problem}",
+  "ruler_niah_multikey_3_8k": "{problem}",
+  "ruler_niah_multikey_3_16k": "{problem}",
+  "ruler_niah_multikey_3_32k": "{problem}",
+  "aime24": "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}.",
+  "aime25": "Solve the problem step by step, and put your final answer within \\boxed{}.\n\n{problem}\n\nPlease reason step by step and put your final answer within \\boxed{}."
 }
